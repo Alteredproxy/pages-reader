@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+supabase
+pdfplumber
+trafilatura
+google-genai
+python-multipart
+python-dotenv

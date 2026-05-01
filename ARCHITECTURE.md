@@ -1,7 +1,7 @@
 # ARCHITECTURE.md
 # Pages — Audio-Reading & Knowledge-Capture Application
 # Source of Truth for Codex (backend) and Gemini (frontend)
-# Last Updated: 2026-04-27
+# Last Updated: 2026-05-01
 
 ---
 
@@ -234,8 +234,11 @@ class DocumentSource:
 
 MAX_CHUNK_CHARS         = 800
 MIN_CHUNK_CHARS         = 50
-TTS_PROVIDER_PRIMARY    = "google"
-TTS_PROVIDER_FALLBACK   = "openai"
+TTS_PROVIDER            = "gemini"
+TTS_MODEL               = "gemini-3.1-flash-tts-preview"
+TTS_VOICE_DEFAULT       = "Pulcherrima"
+TTS_VOICES_AVAILABLE    = ["Pulcherrima", "Kore", "Alloy", "Echo", "Ember", "Fenrir", "Leda", "Orus", "Puck", "Schedar", "Zephyr"]
+TTS_AUDIO_FORMAT        = "wav"
 TTS_CONCURRENCY_DEFAULT = 3
 ```
 
@@ -577,24 +580,25 @@ No auth required.
 │                                                        │
 │  For each chunk (audio_status = pending):              │
 │  1. SET audio_status = 'generating'                    │
-│  2. Call Google Cloud TTS:                             │
-│     POST texttospeech.googleapis.com/v1/text:synthesize│
-│     { input: { text: chunk.raw_text },                 │
-│       voice: { languageCode: "en-US",                  │
-│                name: "en-US-Neural2-J" },              │
-│       audioConfig: { audioEncoding: "MP3" } }          │
-│     Response: base64-encoded MP3                       │
+│  2. Call Gemini TTS (Google AI Studio):                │
+│     POST generativelanguage.googleapis.com/v1beta/     │
+│       models/gemini-3.1-flash-tts-preview:             │
+│       generateContent                                  │
+│     Header: x-goog-api-key: GEMINI_API_KEY             │
+│     { contents:[{parts:[{text: chunk.raw_text}]}],     │
+│       generationConfig:{                               │
+│         responseModalities:["AUDIO"],                  │
+│         speechConfig:{voiceConfig:{                    │
+│           prebuiltVoiceConfig:{voiceName: voice_id}}}}} │
+│     voice_id defaults to GEMINI_TTS_VOICE env var       │
+│     client may pass voice_id in POST /process-tts body  │
+│     Response: base64 raw PCM (24kHz, 16-bit, mono)     │
 │                                                        │
-│     On 429 or 5xx → fallback:                          │
-│     OpenAI TTS POST /v1/audio/speech                   │
-│     { model: "tts-1", input: chunk.raw_text,           │
-│       voice: "alloy" }                                 │
-│                                                        │
-│  3. Decode base64 → MP3 bytes                          │
+│  3. Decode base64 → raw PCM bytes (store as .wav)      │
 │  4. Upload to Supabase Storage:                        │
 │     bucket: "audio" (public)                           │
-│     path:   {user_id}/{doc_id}/{chunk_id}.mp3          │
-│  5. Parse duration_ms from audio metadata              │
+│     path:   {user_id}/{doc_id}/{chunk_id}.wav          │
+│  5. duration_ms = len(bytes)/2/24000*1000              │
 │  6. UPDATE chunk SET audio_url=<url>,                  │
 │                      audio_status='ready',              │
 │                      duration_ms=<ms>                  │
@@ -884,43 +888,66 @@ Output: list of { raw_text, sequence_order, character_count }
 6. character_count: len(raw_text) after normalization
 ```
 
-### 8.2 TTS Processing (Google Cloud primary, OpenAI fallback)
+### 8.2 TTS Processing (Gemini TTS via Google AI Studio)
 
 ```
 For each chunk (audio_status = 'pending'):
 
 1. SET audio_status = 'generating'
 
-2a. Call Google Cloud TTS:
-    POST https://texttospeech.googleapis.com/v1/text:synthesize
-    Headers: { Authorization: "Bearer <GOOGLE_ACCESS_TOKEN>" }
-    Body:
-    {
-      "input":       { "text": "<chunk.raw_text>" },
-      "voice":       { "languageCode": "en-US", "name": "en-US-Neural2-J" },
-      "audioConfig": { "audioEncoding": "MP3" }
-    }
-    Response: { "audioContent": "<base64-encoded MP3>" }
+2. Call Gemini TTS API:
+   POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent
+   Headers: { "x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json" }
+   Body:
+   {
+     "contents": [{ "parts": [{ "text": "<chunk.raw_text>" }] }],
+     "generationConfig": {
+       "responseModalities": ["AUDIO"],
+       "speechConfig": {
+         "voiceConfig": {
+           "prebuiltVoiceConfig": { "voiceName": "Kore" }
+         }
+       }
+     }
+   }
 
-    Decode: audio_bytes = base64.b64decode(response["audioContent"])
+   Response:
+   {
+     "candidates": [{
+       "content": {
+         "parts": [{
+           "inlineData": {
+             "mimeType": "audio/L16;codec=pcm;rate=24000",
+             "data": "<base64-encoded raw PCM>"
+           }
+         }]
+       }
+     }]
+   }
 
-2b. On 429 or 5xx → OpenAI fallback:
-    POST https://api.openai.com/v1/audio/speech
-    Headers: { Authorization: "Bearer <OPENAI_API_KEY>" }
-    Body: { "model": "tts-1", "input": "<chunk.raw_text>", "voice": "alloy" }
-    Response: binary MP3 stream
+   Extract: audio_bytes = base64.b64decode(response["candidates"][0]["content"]["parts"][0]["inlineData"]["data"])
+
+   NOTE: Response is raw 24kHz, 16-bit, mono PCM — NOT MP3.
+   Store directly as .wav — no conversion needed.
+   Web Audio API decodes WAV natively in the browser.
+
+   On failure (non-200 or missing inlineData): raise exception → audio_status = 'error'
+   Retry logic: up to 3 attempts with 2s backoff before marking error.
 
 3. Upload to Supabase Storage:
-   bucket: "audio" (public read, no auth on GET)
-   path:   "{user_id}/{doc_id}/{chunk_id}.mp3"
+   bucket: "audio" (public read)
+   path:   "{user_id}/{doc_id}/{chunk_id}.wav"
+   content-type: "audio/wav"
    → returns public URL
 
-4. Parse duration_ms from MP3 metadata (use mutagen library)
+4. Parse duration_ms:
+   duration_ms = (len(audio_bytes) / 2 / 24000) * 1000
+   (bytes ÷ 2 bytes-per-sample ÷ 24000 samples/sec × 1000 ms/sec)
 
 5. UPDATE chunks SET
      audio_url     = <public_url>,
      audio_status  = 'ready',
-     duration_ms   = <parsed_ms>,
+     duration_ms   = <calculated_ms>,
      updated_at    = NOW()
 
 6. UPDATE documents SET ready_chunks = ready_chunks + 1
@@ -1006,9 +1033,8 @@ const hasPending = chunks.some(c =>
 | `SUPABASE_URL` | Yes | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | Yes | Service role key (bypasses RLS for server ops) |
 | `SUPABASE_ANON_KEY` | Yes | Anon key (for auth verification) |
-| `GOOGLE_APPLICATION_CREDENTIALS` | Yes | Path to Google Cloud service account JSON |
-| `GOOGLE_TTS_VOICE` | No | Default voice. Default: `en-US-Neural2-J` |
-| `OPENAI_API_KEY` | Yes | OpenAI key for TTS fallback |
+| `GEMINI_API_KEY` | Yes | Google AI Studio API key (aistudio.google.com) |
+| `GEMINI_TTS_VOICE` | No | Default voice name. Default: `Pulcherrima` |
 | `FRONTEND_URL` | Yes | Production frontend URL for CORS |
 | `MAX_FILE_SIZE_MB` | No | PDF upload limit. Default: `20` |
 | `TTS_CONCURRENCY` | No | Max parallel TTS calls. Default: `3` |
@@ -1047,7 +1073,7 @@ const hasPending = chunks.some(c =>
 |------|----------|-----------|
 | 2026-04-27 | TTS triggered explicitly, not auto after parse | User previews text before incurring TTS cost |
 | 2026-04-27 | Audio stored in Supabase Storage (public bucket) | Browser fetches directly; no backend streaming proxy needed |
-| 2026-04-27 | Google Cloud TTS primary, OpenAI TTS fallback | Google Neural2 quality + cost; OpenAI reliability on rate-limit recovery |
+| 2026-05-01 | Gemini TTS via Google AI Studio (gemini-3.1-flash-tts-preview) | Free tier, no billing/service account needed; stores raw PCM as .wav (no ffmpeg conversion) |
 | 2026-04-27 | Chunk size ceiling 800 chars | Balance between TTS latency per chunk and semantic coherence |
 | 2026-04-27 | Polling for chunk status (not WebSockets) | Lower complexity; 3s interval is acceptable UX |
 | 2026-04-27 | `playback_offset_ms` on notes | Enables future "jump to moment" feature |
