@@ -127,7 +127,36 @@ CREATE INDEX idx_documents_created_at ON public.documents(created_at DESC);
 
 ---
 
-### 2.3 Table: `chunks`
+### 2.3 Table: `chapters`
+
+```sql
+CREATE TABLE public.chapters (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  document_id     UUID NOT NULL REFERENCES public.documents(id) ON DELETE CASCADE,
+  sequence_order  INT NOT NULL,
+  title           TEXT NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+  UNIQUE (document_id, sequence_order)
+);
+
+CREATE INDEX idx_chapters_document_id ON public.chapters(document_id);
+CREATE INDEX idx_chapters_sequence    ON public.chapters(document_id, sequence_order ASC);
+
+ALTER TABLE public.chapters ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "users_own_chapters" ON public.chapters
+  FOR ALL USING (
+    document_id IN (
+      SELECT id FROM public.documents WHERE user_id = auth.uid()
+    )
+  );
+```
+
+> Codex: Insert chapters during `parse_and_chunk_document`. A document with no detectable headings gets zero chapter rows — chunks remain flat.
+
+---
+
+### 2.4 Table: `chunks`
 
 ```sql
 CREATE TYPE audio_status AS ENUM ('pending', 'generating', 'ready', 'error');
@@ -135,6 +164,7 @@ CREATE TYPE audio_status AS ENUM ('pending', 'generating', 'ready', 'error');
 CREATE TABLE public.chunks (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   document_id     UUID NOT NULL REFERENCES public.documents(id) ON DELETE CASCADE,
+  chapter_id      UUID REFERENCES public.chapters(id) ON DELETE SET NULL,  -- NULL if no chapters detected
   sequence_order  INT NOT NULL,
   raw_text        TEXT NOT NULL,
   audio_url       TEXT,                          -- NULL until TTS complete
@@ -151,11 +181,12 @@ CREATE TABLE public.chunks (
 CREATE INDEX idx_chunks_document_id       ON public.chunks(document_id);
 CREATE INDEX idx_chunks_document_sequence ON public.chunks(document_id, sequence_order ASC);
 CREATE INDEX idx_chunks_audio_status      ON public.chunks(audio_status);
+CREATE INDEX idx_chunks_chapter_id        ON public.chunks(chapter_id);
 ```
 
 ---
 
-### 2.4 Table: `notes`
+### 2.5 Table: `notes`
 
 ```sql
 CREATE TABLE public.notes (
@@ -177,7 +208,7 @@ CREATE INDEX idx_notes_created_at  ON public.notes(created_at DESC);
 
 ---
 
-### 2.5 Row Level Security (RLS)
+### 2.6 Row Level Security (RLS)
 
 Codex must apply all policies in migrations.
 
@@ -234,10 +265,19 @@ class DocumentSource:
 
 MAX_CHUNK_CHARS         = 800
 MIN_CHUNK_CHARS         = 50
-TTS_PROVIDER            = "gemini"
-TTS_MODEL               = "gemini-3.1-flash-tts-preview"
-TTS_VOICE_DEFAULT       = "Pulcherrima"
-TTS_VOICES_AVAILABLE    = ["Pulcherrima", "Kore", "Alloy", "Echo", "Ember", "Fenrir", "Leda", "Orus", "Puck", "Schedar", "Zephyr"]
+TTS_PROVIDER            = "google_cloud"
+TTS_MODEL               = "en-US-Chirp3-HD-Pulcherrima"
+TTS_VOICE_DEFAULT       = "en-US-Chirp3-HD-Pulcherrima"
+TTS_VOICES_AVAILABLE    = [
+    "en-US-Chirp3-HD-Aoede",
+    "en-US-Chirp3-HD-Charon",
+    "en-US-Chirp3-HD-Kore",
+    "en-US-Chirp3-HD-Pulcherrima",
+    "en-US-Chirp3-HD-Zephyr",
+    "en-US-Chirp3-HD-Fenrir",
+    "en-US-Chirp3-HD-Leda",
+    "en-US-Chirp3-HD-Puck",
+]
 TTS_AUDIO_FORMAT        = "wav"
 TTS_CONCURRENCY_DEFAULT = 3
 ```
@@ -390,7 +430,31 @@ title : string  (optional, defaults to filename)
 
 ---
 
-### 4.5 `GET /api/v1/documents/{doc_id}/chunks`
+### 4.5 `GET /api/v1/documents/{doc_id}/chapters`
+
+Returns all chapters for a document, ordered by `sequence_order ASC`. Empty array if no chapters detected.
+
+**Response 200:**
+```json
+{
+  "data": [
+    {
+      "id":             "uuid",
+      "document_id":    "uuid",
+      "sequence_order": 0,
+      "title":          "string",
+      "created_at":     "ISO8601"
+    }
+  ],
+  "meta": { "total": 5 }
+}
+```
+
+**Errors:** `NOT_FOUND` 404
+
+---
+
+### 4.6 `GET /api/v1/documents/{doc_id}/chunks`
 
 Primary payload consumed by the audio player. Always ordered by `sequence_order ASC`.
 
@@ -403,6 +467,7 @@ Primary payload consumed by the audio player. Always ordered by `sequence_order 
     {
       "id":              "uuid",
       "document_id":     "uuid",
+      "chapter_id":      "uuid | null",
       "sequence_order":  0,
       "raw_text":        "string",
       "audio_url":       "string | null",
@@ -418,7 +483,7 @@ Primary payload consumed by the audio player. Always ordered by `sequence_order 
 
 ---
 
-### 4.6 `POST /api/v1/documents/{doc_id}/process-tts`
+### 4.7 `POST /api/v1/documents/{doc_id}/process-tts`
 
 Triggers async TTS for all chunks where `audio_status` is `pending` or `error`.
 
@@ -443,7 +508,7 @@ Triggers async TTS for all chunks where `audio_status` is `pending` or `error`.
 
 ---
 
-### 4.7 `POST /api/v1/notes`
+### 4.8 `POST /api/v1/notes`
 
 **Request body:**
 ```json
@@ -479,7 +544,7 @@ Triggers async TTS for all chunks where `audio_status` is `pending` or `error`.
 
 ---
 
-### 4.8 `GET /api/v1/documents/{doc_id}/notes`
+### 4.9 `GET /api/v1/documents/{doc_id}/notes`
 
 **Query params:** `chunk_id` (optional), `limit` (default 50, max 200), `offset` (default 0)
 
@@ -507,14 +572,23 @@ Triggers async TTS for all chunks where `audio_status` is `pending` or `error`.
 
 ---
 
-### 4.9 `DELETE /api/v1/notes/{note_id}`
+### 4.10 `DELETE /api/v1/documents/{doc_id}`
+
+**Response 204:** Empty body.
+**Errors:** `NOT_FOUND` 404
+
+Cascades: deletes all chunks, chapters, notes, and Supabase Storage audio files for this document.
+
+---
+
+### 4.11 `DELETE /api/v1/notes/{note_id}`
 
 **Response 204:** Empty body.
 **Errors:** `NOT_FOUND` 404
 
 ---
 
-### 4.10 `GET /api/v1/health`
+### 4.12 `GET /api/v1/health`
 
 No auth required.
 
@@ -663,10 +737,20 @@ export interface Document {
   updated_at:    string;
 }
 
+// ── Chapters ─────────────────────────────────────────────
+export interface Chapter {
+  id:             string;
+  document_id:    string;
+  sequence_order: number;
+  title:          string;
+  created_at:     string;
+}
+
 // ── Chunks ───────────────────────────────────────────────
 export interface Chunk {
   id:              string;
   document_id:     string;
+  chapter_id:      string | null;
   sequence_order:  number;
   raw_text:        string;
   audio_url:       string | null;
@@ -888,50 +972,31 @@ Output: list of { raw_text, sequence_order, character_count }
 6. character_count: len(raw_text) after normalization
 ```
 
-### 8.2 TTS Processing (Gemini TTS via Google AI Studio)
+### 8.2 TTS Processing (Google Cloud Text-to-Speech)
 
 ```
 For each chunk (audio_status = 'pending'):
 
 1. SET audio_status = 'generating'
 
-2. Call Gemini TTS API:
-   POST https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-tts-preview:generateContent
-   Headers: { "x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json" }
-   Body:
-   {
-     "contents": [{ "parts": [{ "text": "<chunk.raw_text>" }] }],
-     "generationConfig": {
-       "responseModalities": ["AUDIO"],
-       "speechConfig": {
-         "voiceConfig": {
-           "prebuiltVoiceConfig": { "voiceName": "Kore" }
-         }
-       }
-     }
-   }
+2. Call Google Cloud Text-to-Speech API:
+   SDK: google-cloud-texttospeech (gRPC)
+   Auth: GOOGLE_APPLICATION_CREDENTIALS (path to service account JSON key file)
+   Client: texttospeech.TextToSpeechClient()
 
-   Response:
-   {
-     "candidates": [{
-       "content": {
-         "parts": [{
-           "inlineData": {
-             "mimeType": "audio/L16;codec=pcm;rate=24000",
-             "data": "<base64-encoded raw PCM>"
-           }
-         }]
-       }
-     }]
-   }
+   Request:
+     SynthesisInput(text="<chunk.raw_text>")
+     VoiceSelectionParams(language_code="en-US", name=voice_id)
+     AudioConfig(audio_encoding=LINEAR16, sample_rate_hertz=24000)
 
-   Extract: audio_bytes = base64.b64decode(response["candidates"][0]["content"]["parts"][0]["inlineData"]["data"])
+   Response: response.audio_content = raw 24kHz, 16-bit, mono PCM
+   (SDK may include RIFF/WAV header depending on version — stripped before re-wrapping
+    via _strip_wav_header() to guarantee a consistent, controlled WAV structure)
 
-   NOTE: Response is raw 24kHz, 16-bit, mono PCM — NOT MP3.
-   Store directly as .wav — no conversion needed.
-   Web Audio API decodes WAV natively in the browser.
+   voice_id defaults to GOOGLE_TTS_VOICE env var (default: en-US-Neural2-J)
+   Client may pass voice_id in POST /process-tts body (Neural2 format e.g. "en-US-Neural2-J")
 
-   On failure (non-200 or missing inlineData): raise exception → audio_status = 'error'
+   On failure: raise exception → audio_status = 'error'
    Retry logic: up to 3 attempts with 2s backoff before marking error.
 
 3. Upload to Supabase Storage:
@@ -1033,8 +1098,8 @@ const hasPending = chunks.some(c =>
 | `SUPABASE_URL` | Yes | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | Yes | Service role key (bypasses RLS for server ops) |
 | `SUPABASE_ANON_KEY` | Yes | Anon key (for auth verification) |
-| `GEMINI_API_KEY` | Yes | Google AI Studio API key (aistudio.google.com) |
-| `GEMINI_TTS_VOICE` | No | Default voice name. Default: `Pulcherrima` |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Yes | Path to GCP service account JSON key file |
+| `GOOGLE_TTS_VOICE` | No | Default Neural2 voice name. Default: `en-US-Neural2-J` |
 | `FRONTEND_URL` | Yes | Production frontend URL for CORS |
 | `MAX_FILE_SIZE_MB` | No | PDF upload limit. Default: `20` |
 | `TTS_CONCURRENCY` | No | Max parallel TTS calls. Default: `3` |
@@ -1073,7 +1138,11 @@ const hasPending = chunks.some(c =>
 |------|----------|-----------|
 | 2026-04-27 | TTS triggered explicitly, not auto after parse | User previews text before incurring TTS cost |
 | 2026-04-27 | Audio stored in Supabase Storage (public bucket) | Browser fetches directly; no backend streaming proxy needed |
-| 2026-05-01 | Gemini TTS via Google AI Studio (gemini-3.1-flash-tts-preview) | Free tier, no billing/service account needed; stores raw PCM as .wav (no ffmpeg conversion) |
+| 2026-05-01 | ~~Gemini TTS via Google AI Studio~~ (superseded 2026-05-09) | Original: free tier, no billing needed. Replaced due to rate limit exhaustion. |
+| 2026-05-09 | Migrated TTS to Google Cloud Text-to-Speech (Neural2) | Gemini AI Studio free tier rate limits exhausted; GCP $300 credits available; WAV/LINEAR16 format kept to avoid storage.py changes and mutagen dependency |
+| 2026-05-09 | Upgraded TTS voice to Chirp 3 HD (Pulcherrima) | Neural2 voice sounded robotic on long chunks; Chirp 3 HD is significantly more natural; same voice name as prior Gemini voice |
+| 2026-05-09 | Added chapters table; chapter_id FK on chunks (nullable) | Enables collapsible chapter sidebar in reader; nullable so docs without headings remain fully functional |
+| 2026-05-09 | Chapter detection via heuristic heading parser | Detects "Chapter N", "PART N", short title-cased/all-caps lines; works for books and articles with section headings |
 | 2026-04-27 | Chunk size ceiling 800 chars | Balance between TTS latency per chunk and semantic coherence |
 | 2026-04-27 | Polling for chunk status (not WebSockets) | Lower complexity; 3s interval is acceptable UX |
 | 2026-04-27 | `playback_offset_ms` on notes | Enables future "jump to moment" feature |
@@ -1087,7 +1156,7 @@ const hasPending = chunks.some(c =>
 
 | # | Question | Default if unresolved |
 |---|----------|----------------------|
-| 1 | Google Cloud TTS voice — use Neural2-J or Chirp 3 HD? | `en-US-Neural2-J` |
+| 1 | ~~Google Cloud TTS voice~~ RESOLVED 2026-05-09: `en-US-Neural2-J` (Neural2 family). Chirp 3 HD deferred to v2. | — |
 | 2 | TTS concurrency: process chunks in strict sequence or parallel under semaphore? | Semaphore, limit=3 |
 | 3 | Should notes support editing (PATCH /notes/{id})? | Not in v1 |
 | 4 | Mobile browser support for Web Audio API? | Desktop-only for v1 |

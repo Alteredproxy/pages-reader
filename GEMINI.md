@@ -1,9 +1,8 @@
 # Gemini Agent Config
 ## Memory System — Read at Session Start
-1. Read `C:\Users\Dell\Desktop\Prime radiant\graphify-out\wiki-index.md`
-2. Read `C:\Users\Dell\Desktop\Prime radiant\agents\PRIMER.md`
-3. Read `C:\Users\Dell\Desktop\Prime radiant\projects\pages\brief.md`
-4. Read `C:\Users\Dell\Desktop\Prime radiant\projects\pages\decisions.md`
+1. Read `C:\Users\Dell\Desktop\Prime radiant\agents\PRIMER.md`
+2. Read `C:\Users\Dell\Desktop\Prime radiant\projects\pages\context-index.md` — load only the pages listed there
+3. Read `C:\Users\Dell\Desktop\Prime radiant\projects\pages\decisions.md` for current project state
 
 ## Your Role in This Project
 You are the Frontend Engineer. Your strictly defined workspace is the `/frontend` directory.
@@ -23,5 +22,11 @@ structure are defined there. Do not deviate from the contracts.
 
 ## Write-Back
 - Append to `C:\Users\Dell\Desktop\Prime radiant\projects\pages\decisions.md` at end of every significant session
-- Append to `C:\Users\Dell\Desktop\Prime radiant\projects\pages\logs\gemini.md` for your own session record
+- Append to `C:\Users\Dell\Desktop\Prime radiant\projects\pages\logs\gemini.md` for your own detailed session record
+- **Append a summary line to `C:\Users\Dell\Desktop\Prime radiant\log.md`** after every significant session, using this format:
+  ```
+  ## [YYYY-MM-DD HH:MM] session | <3-8 word title> — Agent: Gemini
+  Project: pages
+  Key work: <1-3 sentence summary of what was done and any decisions made>
+  ```
 - Follow the format defined in PRIMER.md exactly
