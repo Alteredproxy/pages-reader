@@ -3,12 +3,14 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useChunks } from '../../hooks/useChunks';
 import { useAudioQueue } from '../../hooks/useAudioQueue';
 import { useNotes } from '../../hooks/useNotes';
+import { useChapters } from '../../hooks/useChapters';
 import { PlayerBar } from './PlayerBar';
 import { TranscriptPane } from './TranscriptPane';
 import { NotesPanel } from './NotesPanel';
+import { ChaptersSidebar } from './ChaptersSidebar';
 import { useTheme } from '../../context/ThemeContext';
 import { useAuth } from '../../context/AuthContext';
-import { Sun, Moon, ArrowLeft, LogOut, Play } from 'lucide-react';
+import { Sun, Moon, ArrowLeft, LogOut, Play, BookOpen, Pause, RotateCcw } from 'lucide-react';
 import { triggerTTS, fetchChunks } from '../../api';
 import type { PlayableChunk } from '../../types';
 
@@ -21,11 +23,14 @@ export function ReaderPage() {
   const { chunks, playlist, loading: chunksLoading, setChunks, setPlaylist } = useChunks(docId);
   const { state, controls } = useAudioQueue(playlist);
   const { notes, addNote } = useNotes(docId);
+  const { chapters } = useChapters(docId);
 
   const initialSeekDone = useRef(false);
   const [isTriggering, setIsTriggering] = useState(false);
   const [polling, setPolling] = useState(false);
   const [ttsError, setTtsError] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const hasStarted = useRef(false);
 
   // Polling logic
   useEffect(() => {
@@ -51,6 +56,9 @@ export function ReaderPage() {
           if (!stillWorking) {
             setPolling(false);
           }
+          if (readyChunks.length === newChunks.length && newChunks.length > 0) {
+            hasStarted.current = false;
+          }
         } catch (err) {
           console.error('Polling failed', err);
         }
@@ -65,6 +73,7 @@ export function ReaderPage() {
     setTtsError(false);
     try {
       await triggerTTS(docId);
+      hasStarted.current = true;
       setPolling(true);
     } catch (err) {
       console.error(err);
@@ -97,9 +106,30 @@ export function ReaderPage() {
 
   const readyCount = playlist?.ready_count || 0;
   const totalChunks = playlist?.total_chunks || chunks.length;
-  const errorCount = chunks.filter(c => c.audio_status === 'error').length;
-  const showGenerateBtn = totalChunks > 0 && (readyCount < totalChunks) && !polling && !isTriggering;
-  const isGenerating = polling || isTriggering;
+  
+  const showWidget = totalChunks > 0 && readyCount < totalChunks;
+
+  let btnLabel = '';
+  let btnIcon = null;
+  let btnAction = () => {};
+
+  if (ttsError) {
+    btnLabel = 'Retry';
+    btnIcon = <RotateCcw size={16} />;
+    btnAction = handleGenerateAudio;
+  } else if (polling) {
+    btnLabel = `Generating... (${readyCount}/${totalChunks})`;
+    btnIcon = <Pause size={16} />;
+    btnAction = () => setPolling(false);
+  } else if (!polling && !isTriggering && hasStarted.current) {
+    btnLabel = 'Resume';
+    btnIcon = <Play size={16} />;
+    btnAction = () => setPolling(true);
+  } else {
+    btnLabel = 'Generate Audio';
+    btnIcon = <Play size={16} />;
+    btnAction = handleGenerateAudio;
+  }
 
   return (
     <div className="reader-page">
@@ -107,25 +137,36 @@ export function ReaderPage() {
         <button className="control-btn" onClick={() => navigate('/')} style={{ marginRight: '1rem' }}>
           <ArrowLeft size={20} />
         </button>
+        <button className="control-btn" onClick={() => setSidebarOpen(prev => !prev)} style={{ marginRight: '1rem' }} title="Toggle Chapters">
+          <BookOpen size={20} />
+        </button>
         <div className="logo">Pages</div>
         <div className="doc-title">Document View</div>
         <div style={{ flex: 1 }} />
         
-        {showGenerateBtn && (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginRight: '1rem', position: 'relative' }}>
+        {showWidget && (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', marginRight: '1rem', minWidth: '160px' }}>
             <button 
-              className={`primary-btn ${isGenerating ? 'generating' : ''}`}
-              onClick={handleGenerateAudio}
-              disabled={isGenerating}
-              style={{ padding: '0.4rem 1rem', width: 'auto', display: 'flex', alignItems: 'center', gap: '0.5rem', margin: 0 }}
+              className="primary-btn"
+              onClick={btnAction}
+              disabled={isTriggering}
+              style={{ padding: '0.4rem 1rem', width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', margin: 0 }}
             >
-              <Play size={16} />
-              {isGenerating ? `Generating... (${readyCount} / ${totalChunks} ready)` : errorCount > 0 ? `Retry Failed (${errorCount} chunks)` : 'Generate Audio'}
+              {btnIcon}
+              {btnLabel}
             </button>
-            {ttsError && (
-              <span style={{ color: 'var(--accent-color)', fontSize: '0.75rem', position: 'absolute', top: '110%', whiteSpace: 'nowrap' }}>
-                Failed to start audio generation. Try again.
-              </span>
+            {hasStarted.current && (
+              <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                <div style={{ height: '4px', background: 'var(--border-color)', borderRadius: '2px', overflow: 'hidden' }}>
+                  <div 
+                    className={`progress-fill ${polling ? 'progress-fill--generating' : ''}`} 
+                    style={{ width: `${(readyCount / totalChunks) * 100}%`, height: '100%', background: 'var(--accent-color)', borderRadius: '2px' }} 
+                  />
+                </div>
+                <div style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', textAlign: 'center' }}>
+                  {readyCount} / {totalChunks} chunks ready
+                </div>
+              </div>
             )}
           </div>
         )}
@@ -138,11 +179,21 @@ export function ReaderPage() {
         </button>
       </header>
       
-      <main className="reader-main">
+      <ChaptersSidebar
+        chapters={chapters}
+        chunks={chunks}
+        activeChunkId={state.activeChunkId}
+        onSeek={controls.seekToChunk}
+        isOpen={sidebarOpen}
+        onToggle={() => setSidebarOpen(prev => !prev)}
+      />
+
+      <main className="reader-main" style={{ marginLeft: sidebarOpen ? '260px' : '0', transition: 'margin-left 0.25s ease' }}>
         <TranscriptPane 
           chunks={chunks} 
           activeChunkId={state.activeChunkId} 
           onChunkClick={controls.seekToChunk}
+          chapters={chapters}
         />
         <NotesPanel
           notes={notes}
@@ -157,6 +208,8 @@ export function ReaderPage() {
         state={state} 
         controls={controls} 
         playlist={playlist} 
+        chapters={chapters}
+        activeChunkId={state.activeChunkId}
       />
     </div>
   );

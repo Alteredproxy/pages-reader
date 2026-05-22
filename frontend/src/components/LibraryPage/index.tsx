@@ -1,10 +1,10 @@
 import { useEffect, useState, useRef } from 'react';
 import { Link } from 'react-router-dom';
-import { fetchDocuments, uploadDocument, uploadDocumentUrl } from '../../api';
+import { fetchDocuments, uploadDocument, uploadDocumentUrl, deleteDocument } from '../../api';
 import type { Document } from '../../types';
 import { useTheme } from '../../context/ThemeContext';
 import { useAuth } from '../../context/AuthContext';
-import { Sun, Moon, LogOut, Plus, FileText, Link as LinkIcon, X } from 'lucide-react';
+import { Sun, Moon, LogOut, Plus, FileText, Link as LinkIcon, X, Trash2 } from 'lucide-react';
 
 const POLLING_INTERVAL = 3000;
 
@@ -22,6 +22,17 @@ export function LibraryPage() {
   const [uploading, setUploading] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleDelete = async (e: React.MouseEvent, docId: string) => {
+    e.preventDefault();
+    if (!window.confirm('Delete this document?')) return;
+    try {
+      await deleteDocument(docId);
+      setDocuments(prev => prev.filter(d => d.id !== docId));
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   const loadDocs = async () => {
     try {
@@ -93,7 +104,16 @@ export function LibraryPage() {
           {documents.map(doc => {
             const progress = doc.total_chunks > 0 ? (doc.ready_chunks / doc.total_chunks) * 100 : 0;
             return (
-              <div key={doc.id} className="doc-card">
+              <div key={doc.id} className="doc-card" style={{ position: 'relative' }}>
+                <button
+                  onClick={(e) => handleDelete(e, doc.id)}
+                  style={{ position: 'absolute', top: '0.75rem', right: '0.75rem',
+                           background: 'none', border: 'none', cursor: 'pointer',
+                           color: 'var(--text-secondary)', opacity: 0.6 }}
+                  title="Delete document"
+                >
+                  <Trash2 size={16} />
+                </button>
                 <div className="doc-header">
                   <span className="doc-badge">{doc.source_type.toUpperCase()}</span>
                   <span className="doc-status">{doc.status}</span>

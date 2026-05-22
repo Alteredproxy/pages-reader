@@ -1,4 +1,4 @@
-import type { Chunk, Note, ApiResponse, PlayableChunk, Document } from '../types';
+import type { Chunk, Note, ApiResponse, PlayableChunk, Document, Chapter } from '../types';
 
 export const mockDocId = "d0000000-0000-0000-0000-000000000000";
 
@@ -194,4 +194,16 @@ export const triggerTTS = async (_docId: string, _voiceId?: string): Promise<Api
   return new Promise((resolve) => setTimeout(() => {
     resolve({ data: { success: true }, meta: null });
   }, 500));
+};
+
+export const deleteDocument = async (docId: string): Promise<ApiResponse<null>> => {
+  return new Promise(resolve => setTimeout(() => {
+    resolve({ data: null as unknown as null, meta: null });
+  }, 300));
+};
+
+export const fetchChapters = async (_docId: string): Promise<ApiResponse<Chapter[]>> => {
+  return new Promise(resolve => setTimeout(() => {
+    resolve({ data: [], meta: { total: 0, limit: 100, offset: 0 } });
+  }, 300));
 };

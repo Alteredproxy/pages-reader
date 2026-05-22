@@ -1,15 +1,25 @@
-import type { PlayerState, PlayerControls, ChunkPlaylist } from '../../types';
+import type { PlayerState, PlayerControls, ChunkPlaylist, Chapter } from '../../types';
 
 interface PlayerBarProps {
   state: PlayerState;
   controls: PlayerControls;
   playlist: ChunkPlaylist | null;
+  chapters: Chapter[];
+  activeChunkId: string | null;
 }
 
-export function PlayerBar({ state, controls, playlist }: PlayerBarProps) {
+export function PlayerBar({ state, controls, playlist, chapters, activeChunkId }: PlayerBarProps) {
   if (!playlist) return null;
 
   const isPlaying = state.status === 'playing';
+
+  const activeChunk = playlist?.chunks.find(c => c.id === activeChunkId) ?? null;
+  const activeChapter = activeChunk?.chapter_id
+    ? chapters.find(ch => ch.id === activeChunk.chapter_id) ?? null
+    : null;
+  const chapterLabel = activeChapter
+    ? `Ch. ${activeChapter.sequence_order + 1} · ${activeChapter.title}`
+    : null;
 
   return (
     <div className="player-bar glass">
@@ -30,8 +40,22 @@ export function PlayerBar({ state, controls, playlist }: PlayerBarProps) {
       </div>
       <div className="player-progress">
         <div className="progress-text">
-          <span>Chunk {Math.max(1, state.activeChunkIndex + 1)} of {playlist.total_chunks}</span>
-          <span className="ready-badge">{playlist.ready_count} / {playlist.total_chunks} ready</span>
+          {chapterLabel && (
+            <span className="chapter-label" style={{
+              color: 'var(--accent-color)',
+              fontWeight: 600,
+              fontSize: '0.8rem',
+              letterSpacing: '0.02em',
+            }}>
+              {chapterLabel}
+            </span>
+          )}
+          <span style={{ color: 'var(--text-secondary)', fontSize: '0.75rem' }}>
+            Chunk {Math.max(1, state.activeChunkIndex + 1)} of {playlist?.total_chunks ?? 0}
+          </span>
+          <span className="ready-badge">
+            {playlist?.ready_count} / {playlist?.total_chunks} ready
+          </span>
         </div>
         <div className="progress-track">
           <div 

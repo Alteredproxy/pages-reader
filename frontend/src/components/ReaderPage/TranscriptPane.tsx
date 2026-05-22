@@ -1,13 +1,14 @@
 import { useEffect, useRef, Fragment } from 'react';
-import type { Chunk } from '../../types';
+import type { Chunk, Chapter } from '../../types';
 
 interface TranscriptPaneProps {
   chunks: Chunk[];
   activeChunkId: string | null;
   onChunkClick: (chunkId: string) => void;
+  chapters: Chapter[];
 }
 
-export function TranscriptPane({ chunks, activeChunkId, onChunkClick }: TranscriptPaneProps) {
+export function TranscriptPane({ chunks, activeChunkId, onChunkClick, chapters }: TranscriptPaneProps) {
   const activeRowRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -16,8 +17,29 @@ export function TranscriptPane({ chunks, activeChunkId, onChunkClick }: Transcri
     }
   }, [activeChunkId]);
 
+  const activeChunk = chunks.find(c => c.id === activeChunkId) ?? null;
+  const activeChapter = activeChunk?.chapter_id
+    ? chapters.find(ch => ch.id === activeChunk.chapter_id) ?? null
+    : null;
+
   return (
     <div className="transcript-pane custom-scrollbar">
+      {activeChapter && (
+        <div style={{
+          position: 'sticky',
+          top: 0,
+          zIndex: 10,
+          padding: '0.5rem 1rem',
+          background: 'var(--bg-surface)',
+          borderBottom: '1px solid var(--border-color)',
+          fontSize: '0.8rem',
+          fontWeight: 600,
+          color: 'var(--accent-color)',
+          letterSpacing: '0.04em',
+        }}>
+          {`Chapter ${activeChapter.sequence_order + 1}: ${activeChapter.title}`}
+        </div>
+      )}
       {chunks.map((chunk) => {
         const isActive = chunk.id === activeChunkId;
         const isReady = chunk.audio_status === 'ready';

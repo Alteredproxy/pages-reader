@@ -1,4 +1,4 @@
-import type { Document, Chunk, Note, ApiResponse, CreateNotePayload } from '../types';
+import type { Document, Chunk, Note, ApiResponse, CreateNotePayload, Chapter } from '../types';
 import { apiRequest } from './client';
 import * as mockApi from './mock';
 
@@ -9,6 +9,11 @@ export const fetchDocuments = async (): Promise<ApiResponse<Document[]>> => {
   return apiRequest<Document[]>('GET', '/documents');
 };
 
+export const deleteDocument = async (docId: string): Promise<ApiResponse<null>> => {
+  if (USE_MOCK) return mockApi.deleteDocument(docId);
+  return apiRequest<null>('DELETE', `/documents/${docId}`);
+};
+
 export const fetchDocument = async (docId: string): Promise<ApiResponse<Document>> => {
   if (USE_MOCK) return mockApi.fetchDocument(docId);
   return apiRequest<Document>('GET', `/documents/${docId}`);
@@ -17,6 +22,11 @@ export const fetchDocument = async (docId: string): Promise<ApiResponse<Document
 export const fetchChunks = async (docId: string): Promise<ApiResponse<Chunk[]>> => {
   if (USE_MOCK) return mockApi.fetchChunks(docId);
   return apiRequest<Chunk[]>('GET', `/documents/${docId}/chunks`);
+};
+
+export const fetchChapters = async (docId: string): Promise<ApiResponse<Chapter[]>> => {
+  if (USE_MOCK) return mockApi.fetchChapters(docId);
+  return apiRequest<Chapter[]>('GET', `/documents/${docId}/chapters`);
 };
 
 export const fetchNotes = async (docId: string): Promise<ApiResponse<Note[]>> => {

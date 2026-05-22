@@ -384,6 +384,14 @@ html.dark .notes-panel {
   transition: width 0.3s ease;
 }
 
+@keyframes shimmer {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+.progress-fill--generating {
+  animation: shimmer 1.5s ease-in-out infinite;
+}
+
 /* Speed Controls */
 .speed-controls {
   display: flex;

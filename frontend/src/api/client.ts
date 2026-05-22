@@ -48,5 +48,9 @@ export async function apiRequest<T>(
     throw new ApiError(errorData.error?.code || 'UNKNOWN_ERROR', errorData.error?.message || 'An error occurred');
   }
 
+  if (response.status === 204 || response.headers.get('content-length') === '0') {
+    return { data: null, meta: null } as any;
+  }
+
   return response.json();
 }

@@ -13,10 +13,20 @@ export interface Document {
   updated_at:    string;
 }
 
+// ── Chapters ────────────────────────────────────────────
+export interface Chapter {
+  id:             string;
+  document_id:    string;
+  sequence_order: number;
+  title:          string;
+  created_at:     string;
+}
+
 // ── Chunks ───────────────────────────────────────────────
 export interface Chunk {
   id:              string;
   document_id:     string;
+  chapter_id:      string | null;
   sequence_order:  number;
   raw_text:        string;
   audio_url:       string | null;
