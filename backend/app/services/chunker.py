@@ -94,7 +94,16 @@ def _merge_short_paragraphs(paragraphs: list[str]) -> list[str]:
     return merged
 
 
-def chunk_text(raw_text: str) -> list[dict]:
+def _chapter_index_for_position(position: int, chapter_offsets: list[int]) -> int:
+    chapter_index = -1
+    for index, offset in enumerate(chapter_offsets):
+        if position < offset:
+            break
+        chapter_index = index
+    return chapter_index
+
+
+def chunk_text(raw_text: str, chapter_offsets: list[int] = []) -> list[dict]:
     candidates = _merge_short_paragraphs(_paragraphs(raw_text))
 
     raw_chunks: list[str] = []
@@ -105,12 +114,17 @@ def chunk_text(raw_text: str) -> list[dict]:
             raw_chunks.extend(_split_oversized_text(candidate))
 
     chunks = [_normalize(chunk) for chunk in raw_chunks if _normalize(chunk)]
-    return [
-        {
+    rows: list[dict] = []
+    position = 0
+    for index, chunk in enumerate(chunks):
+        rows.append(
+            {
             "raw_text": chunk,
             "sequence_order": index,
             "character_count": len(chunk),
             "audio_status": AudioStatus.PENDING,
-        }
-        for index, chunk in enumerate(chunks)
-    ]
+            "chapter_index": _chapter_index_for_position(position, chapter_offsets),
+            }
+        )
+        position += len(chunk)
+    return rows

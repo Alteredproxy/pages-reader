@@ -3,6 +3,6 @@ uvicorn
 supabase
 pdfplumber
 trafilatura
-google-genai
+google-cloud-texttospeech
 python-multipart
 python-dotenv

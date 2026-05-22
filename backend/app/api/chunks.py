@@ -27,6 +27,7 @@ async def list_chunks(
             "id": row["id"],
             "document_id": row["document_id"],
             "sequence_order": row["sequence_order"],
+            "chapter_id": row.get("chapter_id"),
             "raw_text": row["raw_text"],
             "audio_url": row.get("audio_url"),
             "audio_status": row["audio_status"],

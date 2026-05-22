@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-from app.api import chunks, documents, notes, tts  # noqa: E402
+from app.api import chapters, chunks, documents, notes, tts  # noqa: E402
 
 
 app = FastAPI(title="Pages API")
@@ -63,6 +63,7 @@ async def health():
 
 
 app.include_router(documents.router, prefix="/api/v1")
+app.include_router(chapters.router, prefix="/api/v1")
 app.include_router(chunks.router, prefix="/api/v1")
 app.include_router(notes.router, prefix="/api/v1")
 app.include_router(tts.router, prefix="/api/v1")

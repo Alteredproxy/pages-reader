@@ -6,7 +6,7 @@ from app.api.deps import get_current_user
 from app.constants import DocumentSource, DocumentStatus
 from app.db.supabase import get_supabase
 from app.services.chunker import chunk_text
-from app.services.parser import extract_pdf_text, extract_url_text
+from app.services.parser import _clean_text, detect_chapters, extract_pdf_raw, extract_url_raw
 
 router = APIRouter()
 
@@ -37,13 +37,32 @@ def parse_and_chunk_document(doc_id: str, source_type: str, payload: str | bytes
     supabase = get_supabase()
     try:
         if source_type == DocumentSource.PDF:
-            text = extract_pdf_text(payload if isinstance(payload, bytes) else b"")
+            raw_text = extract_pdf_raw(payload if isinstance(payload, bytes) else b"")
+            text = _clean_text(raw_text)
         else:
-            text = extract_url_text(str(payload))
-        chunks = chunk_text(text)
+            raw_text = extract_url_raw(str(payload))
+            text = _clean_text(raw_text)
+        if not text:
+            raise ValueError("No text could be extracted")
+        chapters = detect_chapters(raw_text)
+        chapter_ids = {}
+        chapter_offsets = []
+        if chapters:
+            chapter_rows = [
+                {"document_id": doc_id, "sequence_order": index, "title": chapter["title"]}
+                for index, chapter in enumerate(chapters)
+            ]
+            result = supabase.table("chapters").insert(chapter_rows).execute()
+            chapter_ids = {row["sequence_order"]: row["id"] for row in result.data}
+            chapter_offsets = [chapter["char_offset"] for chapter in chapters]
+        chunks = chunk_text(text, chapter_offsets)
         if not chunks:
             raise ValueError("No chunks were produced from extracted text")
-        rows = [{"document_id": doc_id, **chunk} for chunk in chunks]
+        rows = []
+        for chunk in chunks:
+            chapter_index = chunk.pop("chapter_index", -1)
+            chunk["chapter_id"] = chapter_ids.get(chapter_index)
+            rows.append({"document_id": doc_id, **chunk})
         supabase.table("chunks").insert(rows).execute()
         supabase.table("documents").update(
             {"total_chunks": len(chunks), "status": DocumentStatus.READY, "error_message": None}
@@ -140,3 +159,20 @@ async def get_document(doc_id: str, user=Depends(get_current_user), supabase=Dep
     if not rows:
         raise _error(404, "NOT_FOUND", "Document not found")
     return {"data": rows[0], "meta": None}
+
+
+@router.delete("/documents/{doc_id}", status_code=204)
+async def delete_document(doc_id: str, user=Depends(get_current_user), supabase=Depends(get_supabase)):
+    user_id = _user_id(user)
+    docs = supabase.table("documents").select("id").eq("id", doc_id).eq("user_id", user_id).limit(1).execute().data
+    if not docs:
+        raise _error(404, "NOT_FOUND", "Document not found")
+    chunks = supabase.table("chunks").select("id").eq("document_id", doc_id).execute().data
+    for chunk in chunks:
+        path = f"{user_id}/{doc_id}/{chunk['id']}.wav"
+        try:
+            supabase.storage.from_("audio").remove([path])
+        except Exception:
+            pass
+    supabase.table("documents").delete().eq("id", doc_id).execute()
+    return None
