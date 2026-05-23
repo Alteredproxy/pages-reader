@@ -7,6 +7,7 @@ export const mockChunks: PlayableChunk[] = [
   {
     id: "c0000000-0000-0000-0000-000000000000",
     document_id: mockDocId,
+    chapter_id: null,
     sequence_order: 0,
     raw_text: "Welcome to Pages. This is the first paragraph chunk of your document. It will play first.",
     audio_url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3",
@@ -18,6 +19,7 @@ export const mockChunks: PlayableChunk[] = [
   {
     id: "c0000000-0000-0000-0000-000000000001",
     document_id: mockDocId,
+    chapter_id: null,
     sequence_order: 1,
     raw_text: "Here is the second chunk. Notice how playback transitions seamlessly from one chunk to the next without interruption.",
     audio_url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-2.mp3",
@@ -29,6 +31,7 @@ export const mockChunks: PlayableChunk[] = [
   {
     id: "c0000000-0000-0000-0000-000000000002",
     document_id: mockDocId,
+    chapter_id: null,
     sequence_order: 2,
     raw_text: "This is the third chunk, and it has some notes attached to it.",
     audio_url: "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-3.mp3",
@@ -65,6 +68,7 @@ export const mockDocuments: Document[] = [
     status: "ready",
     total_chunks: 3,
     ready_chunks: 3,
+    generation_status: "idle",
     error_message: null,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString()
@@ -78,6 +82,7 @@ export const mockDocuments: Document[] = [
     status: "processing",
     total_chunks: 10,
     ready_chunks: 5,
+    generation_status: "idle",
     error_message: null,
     created_at: new Date(Date.now() - 86400000).toISOString(),
     updated_at: new Date().toISOString()
@@ -161,6 +166,7 @@ export const uploadDocument = async (_file: File, title?: string): Promise<ApiRe
       status: "processing",
       total_chunks: 0,
       ready_chunks: 0,
+      generation_status: "idle",
       error_message: null,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
@@ -181,6 +187,7 @@ export const uploadDocumentUrl = async (url: string, title?: string): Promise<Ap
       status: "processing",
       total_chunks: 0,
       ready_chunks: 0,
+      generation_status: "idle",
       error_message: null,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
@@ -190,13 +197,17 @@ export const uploadDocumentUrl = async (url: string, title?: string): Promise<Ap
   }, 500));
 };
 
-export const triggerTTS = async (_docId: string, _voiceId?: string): Promise<ApiResponse<unknown>> => {
+export const triggerTTS = async (docId: string, _voiceId?: string): Promise<ApiResponse<unknown>> => {
   return new Promise((resolve) => setTimeout(() => {
+    const doc = mockDocuments.find(d => d.id === docId);
+    if (doc) {
+      doc.generation_status = "running";
+    }
     resolve({ data: { success: true }, meta: null });
   }, 500));
 };
 
-export const deleteDocument = async (docId: string): Promise<ApiResponse<null>> => {
+export const deleteDocument = async (_docId: string): Promise<ApiResponse<null>> => {
   return new Promise(resolve => setTimeout(() => {
     resolve({ data: null as unknown as null, meta: null });
   }, 300));
@@ -206,4 +217,32 @@ export const fetchChapters = async (_docId: string): Promise<ApiResponse<Chapter
   return new Promise(resolve => setTimeout(() => {
     resolve({ data: [], meta: { total: 0, limit: 100, offset: 0 } });
   }, 300));
+};
+
+export const pauseTTS = async (docId: string): Promise<ApiResponse<{ document_id: string; generation_status: "paused" }>> => {
+  return new Promise((resolve) => setTimeout(() => {
+    const doc = mockDocuments.find(d => d.id === docId);
+    if (doc) {
+      doc.generation_status = "paused";
+    }
+    resolve({ data: { document_id: docId, generation_status: "paused" }, meta: null });
+  }, 500));
+};
+
+export const resumeTTS = async (docId: string, _voiceId?: string): Promise<ApiResponse<{ document_id: string; queued_chunks: number; generation_status: "running"; message: string }>> => {
+  return new Promise((resolve) => setTimeout(() => {
+    const doc = mockDocuments.find(d => d.id === docId);
+    if (doc) {
+      doc.generation_status = "running";
+    }
+    resolve({
+      data: {
+        document_id: docId,
+        queued_chunks: doc ? Math.max(0, doc.total_chunks - doc.ready_chunks) : 0,
+        generation_status: "running",
+        message: "TTS generation resumed"
+      },
+      meta: null
+    });
+  }, 500));
 };

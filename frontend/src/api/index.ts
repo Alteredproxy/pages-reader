@@ -61,3 +61,13 @@ export const triggerTTS = async (docId: string, voiceId?: string): Promise<ApiRe
   if (USE_MOCK) return mockApi.triggerTTS(docId, voiceId);
   return apiRequest<unknown>('POST', `/documents/${docId}/process-tts`, voiceId ? { voice_id: voiceId } : {});
 };
+
+export const pauseTTS = async (docId: string): Promise<ApiResponse<{ document_id: string; generation_status: "paused" }>> => {
+  if (USE_MOCK) return mockApi.pauseTTS(docId);
+  return apiRequest<{ document_id: string; generation_status: "paused" }>('POST', `/documents/${docId}/pause-tts`);
+};
+
+export const resumeTTS = async (docId: string, voiceId?: string): Promise<ApiResponse<{ document_id: string; queued_chunks: number; generation_status: "running"; message: string }>> => {
+  if (USE_MOCK) return mockApi.resumeTTS(docId, voiceId);
+  return apiRequest<{ document_id: string; queued_chunks: number; generation_status: "running"; message: string }>('POST', `/documents/${docId}/resume-tts`, voiceId ? { voice_id: voiceId } : {});
+};

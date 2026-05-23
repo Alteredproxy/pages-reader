@@ -23,9 +23,9 @@ html.dark {
   --bg-surface-hover: #232730;
   --text-primary: #f0f2f5;
   --text-secondary: #9ba1b0;
-  --accent-color: #6366f1;
-  --accent-hover: #4f46e5;
-  --accent-glow: rgba(99, 102, 241, 0.4);
+  --accent-color: #f59e0b;
+  --accent-hover: #d97706;
+  --accent-glow: rgba(245, 158, 11, 0.3);
   --border-color: rgba(255, 255, 255, 0.08);
   --glass-bg: rgba(26, 29, 36, 0.6);
   --glass-border: rgba(255, 255, 255, 0.05);
@@ -70,7 +70,7 @@ h1, h2, h3, .logo {
 }
 
 html.dark .reader-page {
-  background: radial-gradient(circle at top right, rgba(99, 102, 241, 0.08), transparent 40%),
+  background: radial-gradient(circle at top right, rgba(245, 158, 11, 0.08), transparent 40%),
               radial-gradient(circle at bottom left, rgba(236, 72, 153, 0.05), transparent 40%);
 }
 
@@ -251,6 +251,14 @@ html.dark .notes-panel {
 
 .note-time { color: var(--accent-color); font-weight: 600; }
 .note-chunk-ref { color: var(--text-secondary); }
+.note-chapter-ref {
+  color: var(--text-secondary);
+  font-weight: 500;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .note-content { color: var(--text-primary); font-size: 0.95rem; font-family: var(--font-serif); }
 
 .note-editor {
@@ -342,11 +350,26 @@ html.dark .notes-panel {
   color: var(--text-primary);
   width: 50px;
   height: 50px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  transition: border-color 0.2s ease, color 0.2s ease, transform 0.2s ease;
 }
 
 .play-btn:hover {
   color: var(--accent-color);
   transform: scale(1.05);
+}
+
+.play-btn--playing {
+  border-color: #10b981;
+}
+
+.play-btn--paused {
+  border-color: #ef4444;
+}
+
+.play-btn--idle {
+  border-color: #9ca3af;
 }
 
 .player-progress {
@@ -379,7 +402,7 @@ html.dark .notes-panel {
 
 .progress-fill {
   height: 100%;
-  background: var(--text-primary);
+  background: var(--accent-color);
   border-radius: 2px;
   transition: width 0.3s ease;
 }
@@ -421,7 +444,7 @@ html.dark .notes-panel {
 }
 
 .speed-pill.active {
-  background: var(--text-primary);
+  background: var(--accent-color);
   color: var(--bg-surface);
 }
 

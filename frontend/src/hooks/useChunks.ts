@@ -18,13 +18,25 @@ export function useChunks(documentId: string) {
         const newChunks = response.data;
         setChunks(newChunks);
         
-        const readyChunks = newChunks.filter((c): c is PlayableChunk => c.audio_status === 'ready' && c.audio_url !== null);
+        const readyChunks: PlayableChunk[] = [];
+        for (const chunk of newChunks) {
+          if (chunk.audio_status === 'ready' && chunk.audio_url !== null) {
+            readyChunks.push(chunk as PlayableChunk);
+          } else if (chunk.audio_status === 'error') {
+            console.warn(`Skipping errored chunk ${chunk.id} (sequence_order ${chunk.sequence_order})`);
+            continue;
+          } else {
+            break;
+          }
+        }
+        
+        const realReadyCount = newChunks.filter(c => c.audio_status === 'ready' && c.audio_url !== null).length;
         
         setPlaylist({
           document_id: documentId,
           chunks: readyChunks,
           total_chunks: newChunks.length,
-          ready_count: readyChunks.length
+          ready_count: realReadyCount
         });
         
         setLoading(false);

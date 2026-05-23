@@ -52,7 +52,7 @@ export function ChaptersSidebar({ chapters, chunks, activeChunkId, onSeek, isOpe
                   if (firstChunk) onSeek(firstChunk.id);
                 }}
                 style={{
-                  background: isActive ? 'var(--text-primary)' : 'transparent',
+                  background: isActive ? 'var(--accent-color)' : 'transparent',
                   color: isActive ? 'var(--bg-surface)' : 'var(--text-primary)',
                   border: '1px solid var(--border-color)',
                   padding: '0.75rem',

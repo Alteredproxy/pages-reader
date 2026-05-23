@@ -8,6 +8,7 @@ export interface Document {
   status:        "pending" | "processing" | "ready" | "error";
   total_chunks:  number;
   ready_chunks:  number;
+  generation_status: "idle" | "running" | "paused";
   error_message: string | null;
   created_at:    string;
   updated_at:    string;
@@ -102,6 +103,7 @@ export interface PlayerControls {
   play:        () => void;
   pause:       () => void;
   seekToChunk: (chunkId: string) => void;
+  seekBy:      (deltaMs: number) => void;
   skipForward: () => void;
   skipBack:    () => void;
   setSpeed:    (rate: number) => void;

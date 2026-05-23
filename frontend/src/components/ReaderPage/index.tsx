@@ -11,7 +11,7 @@ import { ChaptersSidebar } from './ChaptersSidebar';
 import { useTheme } from '../../context/ThemeContext';
 import { useAuth } from '../../context/AuthContext';
 import { Sun, Moon, ArrowLeft, LogOut, Play, BookOpen, Pause, RotateCcw } from 'lucide-react';
-import { triggerTTS, fetchChunks } from '../../api';
+import { triggerTTS, fetchChunks, fetchDocument, pauseTTS, resumeTTS } from '../../api';
 import type { PlayableChunk } from '../../types';
 
 export function ReaderPage() {
@@ -44,12 +44,24 @@ export function ReaderPage() {
           const newChunks = response.data;
           setChunks(newChunks);
           
-          const readyChunks = newChunks.filter((c): c is PlayableChunk => c.audio_status === 'ready' && c.audio_url !== null);
+          const readyChunks: PlayableChunk[] = [];
+          for (const chunk of newChunks) {
+            if (chunk.audio_status === 'ready' && chunk.audio_url !== null) {
+              readyChunks.push(chunk as PlayableChunk);
+            } else if (chunk.audio_status === 'error') {
+              console.warn(`Skipping errored chunk ${chunk.id} (sequence_order ${chunk.sequence_order})`);
+              continue;
+            } else {
+              break;
+            }
+          }
+
+          const realReadyCount = newChunks.filter(c => c.audio_status === 'ready' && c.audio_url !== null).length;
           setPlaylist({
             document_id: docId,
             chunks: readyChunks,
             total_chunks: newChunks.length,
-            ready_count: readyChunks.length
+            ready_count: realReadyCount
           });
 
           const stillWorking = newChunks.some(c => c.audio_status === 'pending' || c.audio_status === 'generating');
@@ -83,6 +95,54 @@ export function ReaderPage() {
       setIsTriggering(false);
     }
   };
+
+  const handlePauseAudio = async () => {
+    setIsTriggering(true);
+    try {
+      await pauseTTS(docId);
+      setPolling(false);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsTriggering(false);
+    }
+  };
+
+  const handleResumeAudio = async () => {
+    setIsTriggering(true);
+    try {
+      await resumeTTS(docId);
+      setPolling(true);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsTriggering(false);
+    }
+  };
+
+  useEffect(() => {
+    const initDocumentState = async () => {
+      try {
+        const response = await fetchDocument(docId);
+        const doc = response.data;
+        if (doc) {
+          if (doc.generation_status === 'paused') {
+            hasStarted.current = true;
+            setPolling(false);
+          } else if (doc.generation_status === 'running') {
+            hasStarted.current = true;
+            setPolling(true);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch document status:', err);
+      }
+    };
+
+    if (docId) {
+      initDocumentState();
+    }
+  }, [docId]);
 
   useEffect(() => {
     if (!initialSeekDone.current && !chunksLoading && playlist && playlist.chunks.length > 0) {
@@ -120,11 +180,11 @@ export function ReaderPage() {
   } else if (polling) {
     btnLabel = `Generating... (${readyCount}/${totalChunks})`;
     btnIcon = <Pause size={16} />;
-    btnAction = () => setPolling(false);
+    btnAction = handlePauseAudio;
   } else if (!polling && !isTriggering && hasStarted.current) {
     btnLabel = 'Resume';
     btnIcon = <Play size={16} />;
-    btnAction = () => setPolling(true);
+    btnAction = handleResumeAudio;
   } else {
     btnLabel = 'Generate Audio';
     btnIcon = <Play size={16} />;
@@ -197,6 +257,8 @@ export function ReaderPage() {
         />
         <NotesPanel
           notes={notes}
+          chunks={chunks}
+          chapters={chapters}
           activeChunkId={state.activeChunkId}
           firstChunkId={chunks[0]?.id ?? null}
           offsetMs={state.offsetMs}

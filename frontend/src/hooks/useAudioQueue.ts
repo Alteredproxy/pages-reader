@@ -21,6 +21,8 @@ export function useAudioQueue(playlist: ChunkPlaylist | null): UseAudioQueueRetu
   const chunkStartTimesRef = useRef<Map<string, number>>(new Map());
   const timeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const offsetIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const initialSeekOffsetRef = useRef<number>(0);
+  const seekVersionRef = useRef<number>(0);
 
   // Initialize AudioContext lazily
   useEffect(() => {
@@ -41,7 +43,19 @@ export function useAudioQueue(playlist: ChunkPlaylist | null): UseAudioQueueRetu
     }
   };
 
-  const scheduleChunk = async (chunk: PlayableChunk, index: number, startTime: number) => {
+  const stopAll = useCallback(() => {
+    sourcesRef.current.forEach(source => {
+      try { source.stop(); } catch(e) {}
+    });
+    sourcesRef.current.clear();
+    scheduledChunksRef.current.clear();
+    chunkStartTimesRef.current.clear();
+    clearTimeouts();
+    nextStartTimeRef.current = 0;
+  }, []);
+
+  const scheduleChunk = useCallback(async (chunk: PlayableChunk, index: number, startTime: number, offsetMs: number = 0) => {
+    const myVersion = seekVersionRef.current;
     const ctx = audioContextRef.current;
     if (!ctx) return;
 
@@ -50,20 +64,37 @@ export function useAudioQueue(playlist: ChunkPlaylist | null): UseAudioQueueRetu
       if (!buffer) {
         // Fetch audio
         const response = await fetch(chunk.audio_url);
+        if (myVersion !== seekVersionRef.current) return;
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const arrayBuffer = await response.arrayBuffer();
+        if (myVersion !== seekVersionRef.current) return;
         buffer = await ctx.decodeAudioData(arrayBuffer);
+        if (myVersion !== seekVersionRef.current) return;
         bufferCacheRef.current.set(chunk.id, buffer);
       }
+
+      if (myVersion !== seekVersionRef.current) return;
 
       const source = ctx.createBufferSource();
       source.buffer = buffer;
       source.playbackRate.value = speedRef.current;
       source.connect(ctx.destination);
-      source.start(startTime);
+      
+      const offsetSec = offsetMs / 1000;
+      
+      if (myVersion !== seekVersionRef.current) return;
+      source.start(startTime, offsetSec);
       
       sourcesRef.current.set(chunk.id, source);
-      chunkStartTimesRef.current.set(chunk.id, startTime);
+
+      if (myVersion !== seekVersionRef.current) {
+        try { source.stop(); } catch (e) {}
+        sourcesRef.current.delete(chunk.id);
+        return;
+      }
+      
+      const adjustedStartTime = startTime - (offsetSec / speedRef.current);
+      chunkStartTimesRef.current.set(chunk.id, adjustedStartTime);
 
       // Schedule activeChunkId update
       const delayMs = Math.max(0, (startTime - ctx.currentTime) * 1000);
@@ -79,7 +110,56 @@ export function useAudioQueue(playlist: ChunkPlaylist | null): UseAudioQueueRetu
     } catch (error) {
       console.warn(`Chunk fetch error for ${chunk.id}:`, error);
     }
-  };
+  }, []);
+
+  const internalSeek = useCallback(async (targetIndex: number, targetOffsetMs: number) => {
+    seekVersionRef.current++;
+    if (!playlist || playlist.chunks.length === 0) return;
+
+    // Clamp index
+    targetIndex = Math.max(0, Math.min(targetIndex, playlist.chunks.length - 1));
+    const targetChunk = playlist.chunks[targetIndex];
+    const duration = targetChunk.duration_ms || 0;
+    // Clamp offset
+    targetOffsetMs = Math.max(0, Math.min(targetOffsetMs, duration));
+
+    // Preserve play/paused state
+    const wasPlaying = state.status === 'playing' || state.status === 'loading';
+
+    // Stop all current sources
+    stopAll();
+
+    // Set state
+    setState(prev => ({
+      ...prev,
+      activeChunkId: targetChunk.id,
+      activeChunkIndex: targetIndex,
+      offsetMs: targetOffsetMs,
+      status: wasPlaying ? 'playing' : 'paused'
+    }));
+
+    if (wasPlaying) {
+      if (!audioContextRef.current) {
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        audioContextRef.current = new AudioContextClass();
+      }
+      const ctx = audioContextRef.current;
+      if (ctx.state === 'suspended') {
+        await ctx.resume();
+      }
+
+      nextStartTimeRef.current = ctx.currentTime + 0.1;
+      scheduledChunksRef.current.add(targetChunk.id);
+      await scheduleChunk(targetChunk, targetIndex, nextStartTimeRef.current, targetOffsetMs);
+
+      const buffer = bufferCacheRef.current.get(targetChunk.id);
+      const durationSec = buffer ? buffer.duration : (duration / 1000);
+      const remainingDurationSec = Math.max(0, durationSec - (targetOffsetMs / 1000));
+      nextStartTimeRef.current += (remainingDurationSec / speedRef.current);
+    } else {
+      initialSeekOffsetRef.current = targetOffsetMs;
+    }
+  }, [playlist, state.status, stopAll, scheduleChunk]);
 
   // Keep queue filled (gapless playback & prefetch window)
   const manageQueue = useCallback(async () => {
@@ -94,18 +174,23 @@ export function useAudioQueue(playlist: ChunkPlaylist | null): UseAudioQueueRetu
       if (!scheduledChunksRef.current.has(chunk.id)) {
         scheduledChunksRef.current.add(chunk.id);
         
-        if (nextStartTimeRef.current === 0 || nextStartTimeRef.current < ctx.currentTime) {
+        const isFirstScheduledChunk = nextStartTimeRef.current === 0 || nextStartTimeRef.current < ctx.currentTime;
+        const currentOffset = isFirstScheduledChunk ? initialSeekOffsetRef.current : 0;
+        
+        if (isFirstScheduledChunk) {
             nextStartTimeRef.current = ctx.currentTime + 0.1;
+            initialSeekOffsetRef.current = 0; // reset
         }
 
-        await scheduleChunk(chunk, i, nextStartTimeRef.current);
+        await scheduleChunk(chunk, i, nextStartTimeRef.current, currentOffset);
         
         const buffer = bufferCacheRef.current.get(chunk.id);
         const durationSec = buffer ? buffer.duration : (chunk.duration_ms / 1000);
-        nextStartTimeRef.current += (durationSec / speedRef.current);
+        const remainingDurationSec = Math.max(0, durationSec - (currentOffset / 1000));
+        nextStartTimeRef.current += (remainingDurationSec / speedRef.current);
       }
     }
-  }, [playlist, state.activeChunkIndex]);
+  }, [playlist, state.activeChunkIndex, scheduleChunk]);
 
   useEffect(() => {
     if (state.status === 'playing' || state.status === 'loading') {
@@ -121,7 +206,7 @@ export function useAudioQueue(playlist: ChunkPlaylist | null): UseAudioQueueRetu
         if (ctx && state.activeChunkId) {
            const startTime = chunkStartTimesRef.current.get(state.activeChunkId);
            if (startTime !== undefined) {
-             const offset = Math.max(0, (ctx.currentTime - startTime) * 1000);
+             const offset = Math.max(0, (ctx.currentTime - startTime) * 1000 * speedRef.current);
              setState(prev => ({ ...prev, offsetMs: offset }));
            }
         }
@@ -133,17 +218,6 @@ export function useAudioQueue(playlist: ChunkPlaylist | null): UseAudioQueueRetu
       if (offsetIntervalRef.current) clearInterval(offsetIntervalRef.current);
     };
   }, [state.status, state.activeChunkId]);
-
-  const stopAll = () => {
-    sourcesRef.current.forEach(source => {
-      try { source.stop(); } catch(e) {}
-    });
-    sourcesRef.current.clear();
-    scheduledChunksRef.current.clear();
-    chunkStartTimesRef.current.clear();
-    clearTimeouts();
-    nextStartTimeRef.current = 0;
-  };
 
   const controls: PlayerControls = {
     play: async () => {
@@ -168,33 +242,56 @@ export function useAudioQueue(playlist: ChunkPlaylist | null): UseAudioQueueRetu
       if (!playlist) return;
       const index = playlist.chunks.findIndex(c => c.id === chunkId);
       if (index === -1) return;
+      internalSeek(index, 0);
+    },
+    seekBy: (deltaMs: number) => {
+      if (!playlist || playlist.chunks.length === 0) return;
 
-      stopAll();
+      let currentGlobalMs = 0;
+      const currentIndex = state.activeChunkIndex === -1 ? 0 : state.activeChunkIndex;
       
-      setState(prev => ({
-        ...prev,
-        activeChunkId: chunkId,
-        activeChunkIndex: index,
-        offsetMs: 0,
-        status: 'playing'
-      }));
-      
-      const ctx = audioContextRef.current;
-      if (ctx) {
-         nextStartTimeRef.current = ctx.currentTime + 0.1;
+      for (let i = 0; i < currentIndex; i++) {
+        currentGlobalMs += playlist.chunks[i].duration_ms || 0;
       }
+      currentGlobalMs += state.offsetMs;
+
+      const targetGlobalMs = currentGlobalMs + deltaMs;
+
+      let targetIndex = 0;
+      let targetOffsetMs = targetGlobalMs;
+
+      if (targetGlobalMs <= 0) {
+        targetIndex = 0;
+        targetOffsetMs = 0;
+      } else {
+        for (let i = 0; i < playlist.chunks.length; i++) {
+          const duration = playlist.chunks[i].duration_ms || 0;
+          if (targetOffsetMs < duration) {
+            targetIndex = i;
+            break;
+          }
+          if (i === playlist.chunks.length - 1) {
+            targetIndex = i;
+            targetOffsetMs = duration;
+            break;
+          }
+          targetOffsetMs -= duration;
+        }
+      }
+
+      internalSeek(targetIndex, targetOffsetMs);
     },
     skipForward: () => {
       if (!playlist) return;
       const nextIndex = state.activeChunkIndex + 1;
       if (nextIndex < playlist.chunks.length) {
-        controls.seekToChunk(playlist.chunks[nextIndex].id);
+        internalSeek(nextIndex, 0);
       }
     },
     skipBack: () => {
       if (!playlist) return;
       const prevIndex = Math.max(0, state.activeChunkIndex - 1);
-      controls.seekToChunk(playlist.chunks[prevIndex].id);
+      internalSeek(prevIndex, 0);
     },
     setSpeed: (rate: number) => {
       speedRef.current = rate;
@@ -204,3 +301,4 @@ export function useAudioQueue(playlist: ChunkPlaylist | null): UseAudioQueueRetu
 
   return { state, controls, playlist };
 }
+
