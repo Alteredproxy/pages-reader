@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 
 from app.api.deps import get_current_user
 from app.api.documents import _error, _user_id
-from app.db.supabase import get_supabase
+from app.db.supabase import get_supabase, run_threaded_with_retry
 
 router = APIRouter()
 
@@ -10,10 +10,25 @@ router = APIRouter()
 @router.get("/documents/{doc_id}/chapters")
 async def list_chapters(doc_id: str, user=Depends(get_current_user), supabase=Depends(get_supabase)):
     user_id = _user_id(user)
-    docs = supabase.table("documents").select("id").eq("id", doc_id).eq("user_id", user_id).limit(1).execute().data
+    docs = (
+        await run_threaded_with_retry(
+            lambda: supabase.table("documents")
+            .select("id")
+            .eq("id", doc_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+    ).data
     if not docs:
         raise _error(404, "NOT_FOUND", "Document not found")
-    response = supabase.table("chapters").select("*", count="exact").eq("document_id", doc_id).order("sequence_order").execute()
+    response = await run_threaded_with_retry(
+        lambda: supabase.table("chapters")
+        .select("*", count="exact")
+        .eq("document_id", doc_id)
+        .order("sequence_order")
+        .execute()
+    )
     data = [
         {
             "id": r["id"],

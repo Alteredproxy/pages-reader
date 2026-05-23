@@ -17,6 +17,12 @@ class DocumentSource:
     URL = "url"
 
 
+class GenerationStatus:
+    IDLE = "idle"
+    RUNNING = "running"
+    PAUSED = "paused"
+
+
 MAX_CHUNK_CHARS = 800
 MIN_CHUNK_CHARS = 50
 TTS_PROVIDER = "google_cloud"

@@ -1,11 +1,15 @@
 import asyncio
 import os
+import threading
 import wave
 from io import BytesIO
 
 from google.cloud import texttospeech
 
 from app.constants import TTS_VOICE_DEFAULT
+
+_client_lock = threading.Lock()
+_client: texttospeech.TextToSpeechClient | None = None
 
 
 def _wrap_pcm_as_wav(pcm_bytes: bytes, sample_rate: int = 24000) -> bytes:
@@ -31,8 +35,17 @@ def _strip_wav_header(data: bytes) -> bytes:
     return data
 
 
+def _get_tts_client() -> texttospeech.TextToSpeechClient:
+    global _client
+    if _client is None:
+        with _client_lock:
+            if _client is None:
+                _client = texttospeech.TextToSpeechClient()
+    return _client
+
+
 def _request_tts(text: str, voice_id: str) -> bytes:
-    client = texttospeech.TextToSpeechClient()
+    client = _get_tts_client()
     language_code = "-".join(voice_id.split("-")[:2])
     synthesis_input = texttospeech.SynthesisInput(text=text)
     voice_params = texttospeech.VoiceSelectionParams(

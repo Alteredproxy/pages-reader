@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, Query, Response
 
 from app.api.deps import get_current_user
 from app.api.documents import _error, _user_id
-from app.db.supabase import get_supabase
+from app.db.supabase import get_supabase, run_threaded_with_retry
 
 router = APIRouter()
 
@@ -22,21 +22,45 @@ def _chunk_context(chunk: dict) -> dict:
 @router.post("/notes", status_code=201)
 async def create_note(payload: CreateNoteRequest, user=Depends(get_current_user), supabase=Depends(get_supabase)):
     user_id = _user_id(user)
-    docs = supabase.table("documents").select("id").eq("id", payload.document_id).eq("user_id", user_id).limit(1).execute().data
+    docs = (
+        await run_threaded_with_retry(
+            lambda: supabase.table("documents")
+            .select("id")
+            .eq("id", payload.document_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+    ).data
     if not docs:
         raise _error(404, "NOT_FOUND", "Document not found")
-    chunks = supabase.table("chunks").select("*").eq("id", payload.chunk_id).eq("document_id", payload.document_id).limit(1).execute().data
+    chunks = (
+        await run_threaded_with_retry(
+            lambda: supabase.table("chunks")
+            .select("*")
+            .eq("id", payload.chunk_id)
+            .eq("document_id", payload.document_id)
+            .limit(1)
+            .execute()
+        )
+    ).data
     if not chunks:
         raise _error(404, "NOT_FOUND", "Chunk not found")
-    row = supabase.table("notes").insert(
-        {
-            "user_id": user_id,
-            "document_id": payload.document_id,
-            "chunk_id": payload.chunk_id,
-            "content": payload.content,
-            "playback_offset_ms": payload.playback_offset_ms,
-        }
-    ).execute().data[0]
+    row = (
+        await run_threaded_with_retry(
+            lambda: supabase.table("notes")
+            .insert(
+                {
+                    "user_id": user_id,
+                    "document_id": payload.document_id,
+                    "chunk_id": payload.chunk_id,
+                    "content": payload.content,
+                    "playback_offset_ms": payload.playback_offset_ms,
+                }
+            )
+            .execute()
+        )
+    ).data[0]
     data = {
         "id": row["id"],
         "user_id": row["user_id"],
@@ -60,17 +84,34 @@ async def list_notes(
     supabase=Depends(get_supabase),
 ):
     user_id = _user_id(user)
-    docs = supabase.table("documents").select("id").eq("id", doc_id).eq("user_id", user_id).limit(1).execute().data
+    docs = (
+        await run_threaded_with_retry(
+            lambda: supabase.table("documents")
+            .select("id")
+            .eq("id", doc_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+    ).data
     if not docs:
         raise _error(404, "NOT_FOUND", "Document not found")
-    query = supabase.table("notes").select("*", count="exact").eq("document_id", doc_id).eq("user_id", user_id)
-    if chunk_id:
-        query = query.eq("chunk_id", chunk_id)
-    response = query.order("created_at", desc=True).range(offset, offset + limit - 1).execute()
+
+    def list_rows():
+        query = supabase.table("notes").select("*", count="exact").eq("document_id", doc_id).eq("user_id", user_id)
+        if chunk_id:
+            query = query.eq("chunk_id", chunk_id)
+        return query.order("created_at", desc=True).range(offset, offset + limit - 1).execute()
+
+    response = await run_threaded_with_retry(list_rows)
     chunk_ids = list({row["chunk_id"] for row in response.data})
     chunk_map = {}
     if chunk_ids:
-        chunks = supabase.table("chunks").select("id, sequence_order, raw_text").in_("id", chunk_ids).execute().data
+        chunks = (
+            await run_threaded_with_retry(
+                lambda: supabase.table("chunks").select("id, sequence_order, raw_text").in_("id", chunk_ids).execute()
+            )
+        ).data
         chunk_map = {chunk["id"]: chunk for chunk in chunks}
     data = [
         {
@@ -92,8 +133,19 @@ async def list_notes(
 @router.delete("/notes/{note_id}", status_code=204)
 async def delete_note(note_id: str, user=Depends(get_current_user), supabase=Depends(get_supabase)):
     user_id = _user_id(user)
-    rows = supabase.table("notes").select("id").eq("id", note_id).eq("user_id", user_id).limit(1).execute().data
+    rows = (
+        await run_threaded_with_retry(
+            lambda: supabase.table("notes")
+            .select("id")
+            .eq("id", note_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+    ).data
     if not rows:
         raise _error(404, "NOT_FOUND", "Note not found")
-    supabase.table("notes").delete().eq("id", note_id).eq("user_id", user_id).execute()
+    await run_threaded_with_retry(
+        lambda: supabase.table("notes").delete().eq("id", note_id).eq("user_id", user_id).execute()
+    )
     return Response(status_code=204)

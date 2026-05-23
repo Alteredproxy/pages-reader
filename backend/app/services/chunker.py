@@ -1,6 +1,6 @@
 import re
 
-from app.constants import AudioStatus, MAX_CHUNK_CHARS, MIN_CHUNK_CHARS
+from app.constants import MAX_CHUNK_CHARS, MIN_CHUNK_CHARS
 
 
 SENTENCE_BOUNDARY = re.compile(r"(?<=[.,?!])\s+")
@@ -94,16 +94,47 @@ def _merge_short_paragraphs(paragraphs: list[str]) -> list[str]:
     return merged
 
 
-def _chapter_index_for_position(position: int, chapter_offsets: list[int]) -> int:
-    chapter_index = -1
-    for index, offset in enumerate(chapter_offsets):
-        if position < offset:
-            break
-        chapter_index = index
-    return chapter_index
+def _split_heading_and_body(raw_segment: str, title: str) -> tuple[str, str]:
+    lines = raw_segment.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    for index, line in enumerate(lines):
+        if line.strip() == title:
+            return title, "\n".join(lines[index + 1 :])
+    if lines:
+        return title, "\n".join(lines[1:])
+    return title, ""
 
 
-def chunk_text(raw_text: str, chapter_offsets: list[int] = []) -> list[dict]:
+def segment_by_chapters(raw_text: str, chapters: list[dict]) -> list[dict]:
+    if not chapters:
+        return [{"raw_text": raw_text, "title": None, "body": raw_text, "chapter_index": None}]
+
+    ordered_chapters = sorted(chapters, key=lambda chapter: chapter["char_offset"])
+    segments: list[dict] = []
+    first_offset = max(ordered_chapters[0]["char_offset"], 0)
+    front_matter = raw_text[:first_offset]
+    if _normalize(front_matter):
+        segments.append(
+            {"raw_text": front_matter, "title": None, "body": front_matter, "chapter_index": None}
+        )
+
+    for index, chapter in enumerate(ordered_chapters):
+        start = max(chapter["char_offset"], 0)
+        end = ordered_chapters[index + 1]["char_offset"] if index + 1 < len(ordered_chapters) else len(raw_text)
+        raw_segment = raw_text[start:end]
+        title, body = _split_heading_and_body(raw_segment, chapter["title"])
+        segments.append(
+            {
+                "raw_text": raw_segment,
+                "title": title,
+                "body": body,
+                "chapter_index": index,
+            }
+        )
+
+    return segments
+
+
+def chunk_text(raw_text: str) -> list[dict]:
     candidates = _merge_short_paragraphs(_paragraphs(raw_text))
 
     raw_chunks: list[str] = []
@@ -114,17 +145,10 @@ def chunk_text(raw_text: str, chapter_offsets: list[int] = []) -> list[dict]:
             raw_chunks.extend(_split_oversized_text(candidate))
 
     chunks = [_normalize(chunk) for chunk in raw_chunks if _normalize(chunk)]
-    rows: list[dict] = []
-    position = 0
-    for index, chunk in enumerate(chunks):
-        rows.append(
-            {
+    return [
+        {
             "raw_text": chunk,
-            "sequence_order": index,
             "character_count": len(chunk),
-            "audio_status": AudioStatus.PENDING,
-            "chapter_index": _chapter_index_for_position(position, chapter_offsets),
-            }
-        )
-        position += len(chunk)
-    return rows
+        }
+        for chunk in chunks
+    ]

@@ -3,9 +3,9 @@ import os
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, UploadFile
 
 from app.api.deps import get_current_user
-from app.constants import DocumentSource, DocumentStatus
-from app.db.supabase import get_supabase
-from app.services.chunker import chunk_text
+from app.constants import AudioStatus, DocumentSource, DocumentStatus
+from app.db.supabase import get_supabase, run_threaded_with_retry
+from app.services.chunker import chunk_text, segment_by_chapters
 from app.services.parser import _clean_text, detect_chapters, extract_pdf_raw, extract_url_raw
 
 router = APIRouter()
@@ -38,15 +38,12 @@ def parse_and_chunk_document(doc_id: str, source_type: str, payload: str | bytes
     try:
         if source_type == DocumentSource.PDF:
             raw_text = extract_pdf_raw(payload if isinstance(payload, bytes) else b"")
-            text = _clean_text(raw_text)
         else:
             raw_text = extract_url_raw(str(payload))
-            text = _clean_text(raw_text)
-        if not text:
+        if not _clean_text(raw_text):
             raise ValueError("No text could be extracted")
         chapters = detect_chapters(raw_text)
         chapter_ids = {}
-        chapter_offsets = []
         if chapters:
             chapter_rows = [
                 {"document_id": doc_id, "sequence_order": index, "title": chapter["title"]}
@@ -54,18 +51,44 @@ def parse_and_chunk_document(doc_id: str, source_type: str, payload: str | bytes
             ]
             result = supabase.table("chapters").insert(chapter_rows).execute()
             chapter_ids = {row["sequence_order"]: row["id"] for row in result.data}
-            chapter_offsets = [chapter["char_offset"] for chapter in chapters]
-        chunks = chunk_text(text, chapter_offsets)
-        if not chunks:
-            raise ValueError("No chunks were produced from extracted text")
+
         rows = []
-        for chunk in chunks:
-            chapter_index = chunk.pop("chapter_index", -1)
-            chunk["chapter_id"] = chapter_ids.get(chapter_index)
-            rows.append({"document_id": doc_id, **chunk})
+        for segment in segment_by_chapters(raw_text, chapters):
+            chapter_index = segment["chapter_index"]
+            chapter_id = chapter_ids.get(chapter_index)
+            if segment["title"]:
+                title = _clean_text(segment["title"])
+                if title:
+                    rows.append(
+                        {
+                            "document_id": doc_id,
+                            "chapter_id": chapter_id,
+                            "raw_text": title,
+                            "character_count": len(title),
+                            "audio_status": AudioStatus.PENDING,
+                        }
+                    )
+
+            cleaned_body = _clean_text(segment["body"])
+            if not cleaned_body:
+                continue
+            for chunk in chunk_text(cleaned_body):
+                rows.append(
+                    {
+                        "document_id": doc_id,
+                        "chapter_id": chapter_id,
+                        "audio_status": AudioStatus.PENDING,
+                        **chunk,
+                    }
+                )
+
+        if not rows:
+            raise ValueError("No chunks were produced from extracted text")
+        for sequence_order, row in enumerate(rows):
+            row["sequence_order"] = sequence_order
         supabase.table("chunks").insert(rows).execute()
         supabase.table("documents").update(
-            {"total_chunks": len(chunks), "status": DocumentStatus.READY, "error_message": None}
+            {"total_chunks": len(rows), "status": DocumentStatus.READY, "error_message": None}
         ).eq("id", doc_id).execute()
     except Exception as exc:
         supabase.table("documents").update(
@@ -108,15 +131,21 @@ async def create_document(
         source_url = url
         payload = url
 
-    inserted = supabase.table("documents").insert(
-        {
-            "user_id": user_id,
-            "title": doc_title,
-            "source_type": source_type,
-            "source_url": source_url,
-            "status": DocumentStatus.PROCESSING,
-        }
-    ).execute().data[0]
+    inserted = (
+        await run_threaded_with_retry(
+            lambda: supabase.table("documents")
+            .insert(
+                {
+                    "user_id": user_id,
+                    "title": doc_title,
+                    "source_type": source_type,
+                    "source_url": source_url,
+                    "status": DocumentStatus.PROCESSING,
+                }
+            )
+            .execute()
+        )
+    ).data[0]
 
     background_tasks.add_task(parse_and_chunk_document, inserted["id"], source_type, payload)
     return {"data": _document_create_shape(inserted), "meta": None}
@@ -131,10 +160,14 @@ async def list_documents(
     supabase=Depends(get_supabase),
 ):
     user_id = _user_id(user)
-    query = supabase.table("documents").select("*", count="exact").eq("user_id", user_id)
-    if status:
-        query = query.eq("status", status)
-    response = query.order("created_at", desc=True).range(offset, offset + limit - 1).execute()
+
+    def list_rows():
+        query = supabase.table("documents").select("*", count="exact").eq("user_id", user_id)
+        if status:
+            query = query.eq("status", status)
+        return query.order("created_at", desc=True).range(offset, offset + limit - 1).execute()
+
+    response = await run_threaded_with_retry(list_rows)
     data = [
         {
             "id": row["id"],
@@ -155,7 +188,16 @@ async def list_documents(
 @router.get("/documents/{doc_id}")
 async def get_document(doc_id: str, user=Depends(get_current_user), supabase=Depends(get_supabase)):
     user_id = _user_id(user)
-    rows = supabase.table("documents").select("*").eq("id", doc_id).eq("user_id", user_id).limit(1).execute().data
+    rows = (
+        await run_threaded_with_retry(
+            lambda: supabase.table("documents")
+            .select("*")
+            .eq("id", doc_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+    ).data
     if not rows:
         raise _error(404, "NOT_FOUND", "Document not found")
     return {"data": rows[0], "meta": None}
@@ -164,15 +206,28 @@ async def get_document(doc_id: str, user=Depends(get_current_user), supabase=Dep
 @router.delete("/documents/{doc_id}", status_code=204)
 async def delete_document(doc_id: str, user=Depends(get_current_user), supabase=Depends(get_supabase)):
     user_id = _user_id(user)
-    docs = supabase.table("documents").select("id").eq("id", doc_id).eq("user_id", user_id).limit(1).execute().data
+    docs = (
+        await run_threaded_with_retry(
+            lambda: supabase.table("documents")
+            .select("id")
+            .eq("id", doc_id)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+    ).data
     if not docs:
         raise _error(404, "NOT_FOUND", "Document not found")
-    chunks = supabase.table("chunks").select("id").eq("document_id", doc_id).execute().data
+    chunks = (
+        await run_threaded_with_retry(
+            lambda: supabase.table("chunks").select("id").eq("document_id", doc_id).execute()
+        )
+    ).data
     for chunk in chunks:
         path = f"{user_id}/{doc_id}/{chunk['id']}.wav"
         try:
-            supabase.storage.from_("audio").remove([path])
+            await run_threaded_with_retry(lambda: supabase.storage.from_("audio").remove([path]))
         except Exception:
             pass
-    supabase.table("documents").delete().eq("id", doc_id).execute()
+    await run_threaded_with_retry(lambda: supabase.table("documents").delete().eq("id", doc_id).execute())
     return None

@@ -92,7 +92,7 @@ def detect_chapters(text: str) -> list[dict]:
         space_ratio = line.count(" ") / max(len(line), 1)
         if (
             2 <= len(line) <= 120
-            and line[-1:] not in ".?!,;:"
+            and line[-1:] not in ".,;:"
             and not re.search(r"\.{3,}", line)
             and not re.search(r"\s{2,}\d+\s*$", line)
             and space_ratio <= 0.4

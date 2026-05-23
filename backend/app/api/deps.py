@@ -1,6 +1,6 @@
 from fastapi import Depends, Header, HTTPException
 
-from app.db.supabase import get_supabase
+from app.db.supabase import get_supabase, run_threaded_with_retry
 
 
 async def get_current_user(
@@ -8,7 +8,7 @@ async def get_current_user(
     supabase=Depends(get_supabase),
 ) -> dict:
     token = authorization.removeprefix("Bearer ").strip()
-    response = supabase.auth.get_user(token)
+    response = await run_threaded_with_retry(lambda: supabase.auth.get_user(token))
     if not response.user:
         raise HTTPException(
             status_code=401,
@@ -29,8 +29,12 @@ async def get_current_user(
     if isinstance(metadata, dict):
         display_name = metadata.get("display_name") or metadata.get("name")
 
-    supabase.table("users").upsert(
-        {"id": user_id, "email": email, "display_name": display_name},
-        on_conflict="id",
-    ).execute()
+    await run_threaded_with_retry(
+        lambda: supabase.table("users")
+        .upsert(
+            {"id": user_id, "email": email, "display_name": display_name},
+            on_conflict="id",
+        )
+        .execute()
+    )
     return user
