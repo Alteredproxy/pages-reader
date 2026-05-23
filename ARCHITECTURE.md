@@ -1,7 +1,7 @@
 # ARCHITECTURE.md
 # Pages — Audio-Reading & Knowledge-Capture Application
 # Source of Truth for Codex (backend) and Gemini (frontend)
-# Last Updated: 2026-05-01
+# Last Updated: 2026-05-22
 
 ---
 
@@ -115,6 +115,7 @@ CREATE TABLE public.documents (
   status          document_status NOT NULL DEFAULT 'pending',
   total_chunks    INT NOT NULL DEFAULT 0,
   ready_chunks    INT NOT NULL DEFAULT 0,
+  generation_status TEXT NOT NULL DEFAULT 'idle',   -- 'idle' | 'running' | 'paused' — TTS generation control (added in migration 003)
   error_message   TEXT,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -124,6 +125,8 @@ CREATE INDEX idx_documents_user_id    ON public.documents(user_id);
 CREATE INDEX idx_documents_status     ON public.documents(status);
 CREATE INDEX idx_documents_created_at ON public.documents(created_at DESC);
 ```
+
+> Codex: `generation_status` is added in migration `003_generation_status.sql`, not `001`. Set it to `running` when a TTS pass starts, `paused` on `pause-tts`, and back to `idle` when a pass finishes without a pause.
 
 ---
 
@@ -418,6 +421,7 @@ title : string  (optional, defaults to filename)
     "status":        "pending | processing | ready | error",
     "total_chunks":  42,
     "ready_chunks":  42,
+    "generation_status": "idle | running | paused",
     "error_message": "string | null",
     "created_at":    "ISO8601",
     "updated_at":    "ISO8601"
@@ -485,7 +489,7 @@ Primary payload consumed by the audio player. Always ordered by `sequence_order 
 
 ### 4.7 `POST /api/v1/documents/{doc_id}/process-tts`
 
-Triggers async TTS for all chunks where `audio_status` is `pending` or `error`.
+Triggers async TTS for all chunks where `audio_status` is `pending` or `error`. Sets `documents.generation_status = 'running'` for the duration of the pass; back to `idle` when the pass completes without a pause.
 
 **Request body:**
 ```json
@@ -505,6 +509,53 @@ Triggers async TTS for all chunks where `audio_status` is `pending` or `error`.
 ```
 
 **Errors:** `ALREADY_PROCESSING` 409 (if generating_count > 0)
+
+---
+
+### 4.7a `POST /api/v1/documents/{doc_id}/pause-tts`
+
+Soft-pauses an in-progress TTS generation. Sets `documents.generation_status = 'paused'`.
+Chunks already in flight (≤ `TTS_CONCURRENCY`) finish; no new chunks start. Pending
+chunks remain `pending`.
+
+**Request body:** none.
+
+**Response 200:**
+```json
+{
+  "data": { "document_id": "uuid", "generation_status": "paused" },
+  "meta": null
+}
+```
+
+**Errors:** `NOT_FOUND` 404
+
+---
+
+### 4.7b `POST /api/v1/documents/{doc_id}/resume-tts`
+
+Resumes a paused generation. Sets `generation_status = 'running'` and re-launches the
+background task over all chunks still `pending` or `error`.
+
+**Request body:**
+```json
+{ "voice_id": "string (optional, uses default if omitted)" }
+```
+
+**Response 202:**
+```json
+{
+  "data": {
+    "document_id":       "uuid",
+    "queued_chunks":     17,
+    "generation_status": "running",
+    "message":           "TTS generation resumed"
+  },
+  "meta": null
+}
+```
+
+**Errors:** `NOT_FOUND` 404
 
 ---
 
@@ -732,6 +783,7 @@ export interface Document {
   status:        "pending" | "processing" | "ready" | "error";
   total_chunks:  number;
   ready_chunks:  number;
+  generation_status: "idle" | "running" | "paused";
   error_message: string | null;
   created_at:    string;
   updated_at:    string;
@@ -831,6 +883,7 @@ export interface PlayerControls {
   play:        () => void;
   pause:       () => void;
   seekToChunk: (chunkId: string) => void;
+  seekBy:      (deltaMs: number) => void;   // relative time-jump, within or across chunks
   skipForward: () => void;
   skipBack:    () => void;
 }
@@ -862,6 +915,8 @@ export interface CreateNotePayload {
 | **`offsetMs` tracking** | Updated every 250ms while playing: `(audioContext.currentTime - chunkStartTime) * 1000` |
 | **New ready chunks** | Appended to schedule without interrupting playback (poll-driven) |
 | **`seekToChunk`** | Stop current source, clear schedule, recompute from target chunk, restart |
+| **`seekBy(deltaMs)`** | Resolve current global position + `deltaMs` to a `(chunk, intra-chunk offset)` target; restart playback there via `source.start(when, offsetSeconds)`, rolling across chunk boundaries as needed. Clamp below 0 to chunk 0 @ 0ms, above the last ready chunk to its end. Preserve play/paused state. Re-arm the prefetch window. |
+| **Single seek primitive** | `skipForward`, `skipBack`, and `seekBy` MUST route through one internal seek implementation — divergent seek paths caused the prior skip-button unreliability |
 | **Single AudioContext** | One per session; use `suspend()` / `resume()` for pause/play |
 | **Chunk fetch error** | Skip chunk, `console.warn(chunk.id)`, continue — never stop playback |
 
@@ -955,22 +1010,44 @@ async def get_current_user(
 
 ## 8. PROCESSING PIPELINE DETAIL
 
-### 8.1 Chunking Algorithm
+### 8.1 Chunking Algorithm (chapter-aware)
+
+A chapter must never start in the middle of a chunk. The document is segmented by
+chapter **first**, then each segment is chunked independently.
 
 ```
-Input:  raw text string
-Output: list of { raw_text, sequence_order, character_count }
+Input:  raw extracted text + chapters from detect_chapters() (raw-text char offsets)
+Output: ordered list of { raw_text, sequence_order, character_count, chapter_id }
 
-1. Split on \n\n → paragraph candidates
-2. If paragraph > 800 chars:
-   a. Split on \n within paragraph
-   b. If still > 800: split on sentence boundary (". " | "! " | "? ")
-   c. If still > 800: hard split at 800 (avoid mid-word)
-3. If paragraph < 50 chars: merge with next candidate
-4. Normalize: strip leading/trailing whitespace, collapse >2 consecutive newlines
-5. sequence_order: 0-indexed, no gaps
-6. character_count: len(raw_text) after normalization
+1. SEGMENT  (operates on RAW text, before cleaning — offsets are valid here):
+   - Slice raw text at each chapter's char_offset.
+   - Text before the first heading → "front matter" segment (chapter_id = null).
+   - Each chapter segment = its heading line + body, up to the next heading offset.
+   - A document with no detected chapters → one segment, chapter_id = null.
+
+2. PER SEGMENT:
+   a. If the segment is a chapter, emit the chapter title as its OWN chunk
+      (raw_text = the cleaned chapter title).
+   b. Clean the segment body (_clean_text), then chunk the body:
+        - Split on \n\n → paragraph candidates
+        - Paragraph < 50 chars  → merge with next candidate
+        - Paragraph > 800 chars → split on sentence boundary,
+                                   then hard-split mid-word as a last resort
+        - Normalize: strip whitespace, collapse >2 consecutive newlines
+   c. Every chunk from this segment carries the segment's chapter_id.
+
+3. CONCATENATE all chunks in document order:
+   - sequence_order:  0-indexed across the whole document, no gaps
+   - character_count: len(raw_text) after normalization
+
+chunk_text(text) chunks ONE segment and returns { raw_text, character_count } dicts.
+sequence_order and chapter_id are assigned by the orchestrator
+(parse_and_chunk_document) across all segments — NOT by chunk_text.
 ```
+
+> This corrects a prior bug: chapter offsets (measured on raw text) were compared
+> against positions in cleaned text, mis-labelling `chunk.chapter_id`. Segmenting the
+> raw text before cleaning removes the offset-space mismatch entirely.
 
 ### 8.2 TTS Processing (Google Cloud Text-to-Speech)
 
@@ -1149,6 +1226,10 @@ const hasPending = chunks.some(c =>
 | 2026-04-27 | `chunk_context` inline in notes response | Avoids N+1 queries; 200-char preview sufficient for display |
 | 2026-04-27 | `UNIQUE(document_id, sequence_order)` on chunks | Prevents duplicate ordering on concurrent background inserts |
 | 2026-04-27 | `document_id` FK on notes (redundant with chunk FK) | Enables `GET /documents/{id}/notes` without join through chunks |
+| 2026-05-22 | Chapter-aware chunking: segment by chapter before chunking; chapter title is its own chunk | A chapter must never start mid-chunk; segmenting raw text before cleaning also fixes the raw-vs-cleaned offset mismatch that mis-labelled `chunk.chapter_id` |
+| 2026-05-22 | Generation pause/resume via `documents.generation_status` + soft pause | Lets the user halt TTS mid-run to control Google Cloud spend; soft pause lets ≤3 in-flight chunks finish since their API cost is already incurred |
+| 2026-05-22 | Existing documents are NOT retro-chunked by the chapter-aware change | Re-chunking invalidates existing audio and would re-spend TTS credits; new uploads only, consistent with prior cleanup-rule precedent |
+| 2026-05-22 | Player: state-colored ring (green play / red pause) + 10s/30s time-jump buttons | User UX request; all seek paths routed through one primitive to also fix prior skip-button unreliability |
 
 ---
 

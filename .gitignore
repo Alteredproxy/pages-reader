@@ -35,3 +35,10 @@ Thumbs.db
 # Supabase
 supabase/.branches/
 supabase/.temp/
+
+# Personal multi-agent workflow files (not part of the public project)
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+HANDOFF.md
+SPRINT*-PROMPT.md
