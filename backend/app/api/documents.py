@@ -1,3 +1,4 @@
+import logging
 import os
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, Request, UploadFile
@@ -9,6 +10,7 @@ from app.services.chunker import chunk_text, segment_by_chapters
 from app.services.parser import _clean_text, detect_chapters, extract_pdf_raw, extract_url_raw
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _error(status_code: int, code: str, message: str, details=None) -> HTTPException:
@@ -223,11 +225,16 @@ async def delete_document(doc_id: str, user=Depends(get_current_user), supabase=
             lambda: supabase.table("chunks").select("id").eq("document_id", doc_id).execute()
         )
     ).data
-    for chunk in chunks:
-        path = f"{user_id}/{doc_id}/{chunk['id']}.wav"
-        try:
-            await run_threaded_with_retry(lambda: supabase.storage.from_("audio").remove([path]))
-        except Exception:
-            pass
+    paths = [f"{user_id}/{doc_id}/{chunk['id']}.wav" for chunk in chunks]
     await run_threaded_with_retry(lambda: supabase.table("documents").delete().eq("id", doc_id).execute())
+    if paths:
+        try:
+            await run_threaded_with_retry(lambda: supabase.storage.from_("audio").remove(paths))
+        except Exception:
+            logger.warning(
+                "Storage cleanup failed for doc %s (%d files); leaving orphan audio",
+                doc_id,
+                len(paths),
+                exc_info=True,
+            )
     return None
