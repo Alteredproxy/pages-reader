@@ -18,6 +18,10 @@ class ProcessTTSRequest(BaseModel):
     voice_id: str | None = None
 
 
+def _truncate_error(exc: Exception, limit: int = 500) -> str:
+    return str(exc)[:limit]
+
+
 def _document_for_user(supabase, doc_id: str, user_id: str) -> dict:
     docs = supabase.table("documents").select("*").eq("id", doc_id).eq("user_id", user_id).limit(1).execute().data
     if not docs:
@@ -35,6 +39,16 @@ def _pending_or_error_chunks(supabase, doc_id: str) -> list[dict]:
     return supabase.table("chunks").select("*").eq("document_id", doc_id).in_("audio_status", [AudioStatus.PENDING, AudioStatus.ERROR]).order("sequence_order").execute().data
 
 
+def _reset_errored_chunks_to_pending(supabase, doc_id: str):
+    return (
+        supabase.table("chunks")
+        .update({"audio_status": AudioStatus.PENDING, "last_error": None, "error_message": None})
+        .eq("document_id", doc_id)
+        .eq("audio_status", AudioStatus.ERROR)
+        .execute()
+    )
+
+
 async def _document_for_user_async(supabase, doc_id: str, user_id: str) -> dict:
     return await run_threaded_with_retry(lambda: _document_for_user(supabase, doc_id, user_id))
 
@@ -45,6 +59,10 @@ async def _raise_if_generating_async(supabase, doc_id: str) -> None:
 
 async def _pending_or_error_chunks_async(supabase, doc_id: str) -> list[dict]:
     return await run_threaded_with_retry(lambda: _pending_or_error_chunks(supabase, doc_id))
+
+
+async def _reset_errored_chunks_to_pending_async(supabase, doc_id: str) -> None:
+    await run_threaded_with_retry(lambda: _reset_errored_chunks_to_pending(supabase, doc_id))
 
 
 async def _process_one_chunk(supabase, user_id: str, doc_id: str, chunk: dict, voice_id: str | None) -> None:
@@ -67,6 +85,7 @@ async def _process_one_chunk(supabase, user_id: str, doc_id: str, chunk: dict, v
                     "audio_status": AudioStatus.READY,
                     "duration_ms": result["duration_ms"],
                     "error_message": None,
+                    "last_error": None,
                 }
             )
             .eq("id", chunk["id"])
@@ -86,9 +105,10 @@ async def _process_one_chunk(supabase, user_id: str, doc_id: str, chunk: dict, v
             .execute()
         )
     except Exception as exc:
+        last_error = _truncate_error(exc)
         await run_threaded_with_retry(
             lambda: supabase.table("chunks")
-            .update({"audio_status": AudioStatus.ERROR, "error_message": str(exc)})
+            .update({"audio_status": AudioStatus.ERROR, "error_message": str(exc), "last_error": last_error})
             .eq("id", chunk["id"])
             .execute()
         )
@@ -180,6 +200,7 @@ async def resume_tts(
     user_id = _user_id(user)
     await _document_for_user_async(supabase, doc_id, user_id)
     await _raise_if_generating_async(supabase, doc_id)
+    await _reset_errored_chunks_to_pending_async(supabase, doc_id)
     chunks = await _pending_or_error_chunks_async(supabase, doc_id)
     await run_threaded_with_retry(
         lambda: supabase.table("documents")

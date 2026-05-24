@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from app.api.deps import get_current_user
 from app.api.documents import _error, _user_id
 from app.db.supabase import get_supabase, run_threaded_with_retry
+from app.schemas.chunk import ChunkResponse
 
 router = APIRouter()
 
@@ -36,18 +37,19 @@ async def list_chunks(
 
     response = await run_threaded_with_retry(list_rows)
     data = [
-        {
-            "id": row["id"],
-            "document_id": row["document_id"],
-            "sequence_order": row["sequence_order"],
-            "chapter_id": row.get("chapter_id"),
-            "raw_text": row["raw_text"],
-            "audio_url": row.get("audio_url"),
-            "audio_status": row["audio_status"],
-            "character_count": row["character_count"],
-            "duration_ms": row.get("duration_ms"),
-            "created_at": row["created_at"],
-        }
+        ChunkResponse(
+            id=row["id"],
+            document_id=row["document_id"],
+            sequence_order=row["sequence_order"],
+            chapter_id=row.get("chapter_id"),
+            raw_text=row["raw_text"],
+            audio_url=row.get("audio_url"),
+            audio_status=row["audio_status"],
+            character_count=row["character_count"],
+            duration_ms=row.get("duration_ms"),
+            created_at=row["created_at"],
+            last_error=row.get("last_error"),
+        ).model_dump()
         for row in response.data
     ]
     return {"data": data, "meta": {"total": response.count or len(data)}}
