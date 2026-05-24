@@ -21,23 +21,49 @@ export function LibraryPage() {
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [deleteCandidate, setDeleteCandidate] = useState<Document | null>(null);
+  const [, setPendingDeletions] = useState<Set<string>>(new Set());
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
-  const handleDelete = async (e: React.MouseEvent, docId: string) => {
-    e.preventDefault();
-    if (!window.confirm('Delete this document?')) return;
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const pendingDeletionsRef = useRef<Set<string>>(new Set());
+
+  const handleDelete = async (docId: string) => {
+    setPendingDeletions(prev => {
+      const next = new Set(prev);
+      next.add(docId);
+      pendingDeletionsRef.current = next;
+      return next;
+    });
+
+    setDocuments(prev => prev.filter(d => d.id !== docId));
+    setDeleteCandidate(null);
+
     try {
       await deleteDocument(docId);
-      setDocuments(prev => prev.filter(d => d.id !== docId));
+      setPendingDeletions(prev => {
+        const next = new Set(prev);
+        next.delete(docId);
+        pendingDeletionsRef.current = next;
+        return next;
+      });
     } catch (err) {
       console.error(err);
+      setPendingDeletions(prev => {
+        const next = new Set(prev);
+        next.delete(docId);
+        pendingDeletionsRef.current = next;
+        return next;
+      });
+      await loadDocs();
+      setDeleteError('Failed to delete document');
     }
   };
 
   const loadDocs = async () => {
     try {
       const res = await fetchDocuments();
-      setDocuments(res.data);
+      setDocuments(res.data.filter(d => !pendingDeletionsRef.current.has(d.id)));
     } catch (e) {
       console.error(e);
     }
@@ -46,6 +72,27 @@ export function LibraryPage() {
   useEffect(() => {
     loadDocs().then(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    if (deleteError) {
+      const timer = setTimeout(() => {
+        setDeleteError(null);
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [deleteError]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setDeleteCandidate(null);
+      }
+    };
+    if (deleteCandidate) {
+      window.addEventListener('keydown', handleKeyDown);
+    }
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [deleteCandidate]);
 
   useEffect(() => {
     const hasProcessing = documents.some(d => d.status === 'processing' || d.status === 'pending');
@@ -101,15 +148,41 @@ export function LibraryPage() {
 
       <main className="library-main">
         <div className="library-container">
+          {deleteError && (
+            <div 
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                background: theme === 'dark' ? 'rgba(220, 38, 38, 0.2)' : '#fee2e2',
+                border: theme === 'dark' ? '1px solid rgba(220, 38, 38, 0.4)' : '1px solid #fca5a5',
+                color: theme === 'dark' ? '#fca5a5' : '#991b1b',
+                padding: '0.75rem 1rem',
+                borderRadius: '4px',
+                fontFamily: 'var(--font-sans)',
+                fontSize: '0.9rem',
+                marginBottom: '1rem',
+              }}
+            >
+              <span>{deleteError}</span>
+              <button 
+                onClick={() => setDeleteError(null)} 
+                style={{ background: 'none', border: 'none', color: theme === 'dark' ? '#fca5a5' : '#991b1b', cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center' }}
+              >
+                <X size={16} />
+              </button>
+            </div>
+          )}
           {documents.map(doc => {
             const progress = doc.total_chunks > 0 ? (doc.ready_chunks / doc.total_chunks) * 100 : 0;
             return (
               <div key={doc.id} className="doc-card" style={{ position: 'relative' }}>
                 <button
-                  onClick={(e) => handleDelete(e, doc.id)}
-                  style={{ position: 'absolute', top: '0.75rem', right: '0.75rem',
-                           background: 'none', border: 'none', cursor: 'pointer',
-                           color: 'var(--text-secondary)', opacity: 0.6 }}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setDeleteCandidate(doc);
+                  }}
+                  className="doc-delete-btn"
                   title="Delete document"
                 >
                   <Trash2 size={16} />
@@ -178,6 +251,37 @@ export function LibraryPage() {
                 {uploading ? 'Uploading...' : 'Upload'}
               </button>
             </form>
+          </div>
+        </div>
+      )}
+
+      {deleteCandidate && (
+        <div className="modal-overlay" onClick={() => setDeleteCandidate(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div className="doc-card" onClick={e => e.stopPropagation()} style={{ width: '100%', maxWidth: '400px', background: 'var(--bg-surface)', padding: '2rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
+              <h2 style={{ fontFamily: 'var(--font-sans)', color: 'var(--text-primary)' }}>Delete document?</h2>
+              <button onClick={() => setDeleteCandidate(null)} style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+                <X size={24} />
+              </button>
+            </div>
+            
+            <div style={{ marginBottom: '2rem', color: 'var(--text-primary)' }}>
+              <p style={{ fontSize: '1.1rem', marginBottom: '0.5rem', fontWeight: 500, fontFamily: 'var(--font-serif)' }}>
+                "{deleteCandidate.title}"
+              </p>
+              <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', fontFamily: 'var(--font-sans)' }}>
+                This cannot be undone.
+              </p>
+            </div>
+
+            <div style={{ display: 'flex', gap: '1rem' }}>
+              <button onClick={() => setDeleteCandidate(null)} className="primary-btn" style={{ flex: 1 }}>
+                Cancel
+              </button>
+              <button onClick={() => handleDelete(deleteCandidate.id)} className="primary-btn danger-btn" style={{ flex: 1 }}>
+                Delete
+              </button>
+            </div>
           </div>
         </div>
       )}
